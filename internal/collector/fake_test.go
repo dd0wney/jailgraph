@@ -41,6 +41,38 @@ func TestFakeCollector_EmitsEventsInOrderThenCloses(t *testing.T) {
 	}
 }
 
+func TestEventKind_String(t *testing.T) {
+	cases := map[EventKind]string{
+		EventExec:     "exec",
+		EventSpawn:    "spawn",
+		EventOpen:     "open",
+		EventSyscall:  "syscall",
+		EventCap:      "cap",
+		EventJoinNS:   "joinns",
+		EventKind(0):  "unknown",
+		EventKind(99): "unknown",
+	}
+	for k, want := range cases {
+		if got := k.String(); got != want {
+			t.Errorf("EventKind(%d).String() = %q, want %q", k, got, want)
+		}
+	}
+}
+
+func TestFakeCollector_WaitBeforeStartAndClose(t *testing.T) {
+	fc := NewFake(nil)
+	if err := fc.Wait(); err == nil {
+		t.Error("Wait before Start should error")
+	}
+	// Close is safe before Start and idempotent.
+	if err := fc.Close(); err != nil {
+		t.Errorf("Close before Start: %v", err)
+	}
+	if err := fc.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+}
+
 func TestFakeCollector_StartTwiceFails(t *testing.T) {
 	fc := NewFake(nil)
 	if _, err := fc.Start(context.Background()); err != nil {

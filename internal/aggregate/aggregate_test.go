@@ -87,6 +87,42 @@ func TestBuilder_DedupsStructuralEdges(t *testing.T) {
 	}
 }
 
+func TestIsEmpty(t *testing.T) {
+	empties := []any{nil, "", 0, int32(0), uint32(0), uint64(0)}
+	for _, v := range empties {
+		if !isEmpty(v) {
+			t.Errorf("isEmpty(%#v) = false, want true", v)
+		}
+	}
+	nonEmpties := []any{"x", 5, int32(1), uint32(1), uint64(1), true, false}
+	for _, v := range nonEmpties {
+		if isEmpty(v) {
+			t.Errorf("isEmpty(%#v) = true, want false", v)
+		}
+	}
+}
+
+func TestToInt(t *testing.T) {
+	cases := []struct {
+		in   any
+		want int
+	}{
+		{5, 5}, {int32(7), 7}, {int64(9), 9}, {"x", 0}, {nil, 0}, {true, 0},
+	}
+	for _, c := range cases {
+		if got := toInt(c.in); got != c.want {
+			t.Errorf("toInt(%#v) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestBuilder_EmptyHasNoNodesOrEdges(t *testing.T) {
+	b := New("r1")
+	if len(b.Nodes()) != 0 || len(b.Edges()) != 0 {
+		t.Errorf("empty builder: %d nodes, %d edges", len(b.Nodes()), len(b.Edges()))
+	}
+}
+
 func TestBuilder_DeterministicOrder(t *testing.T) {
 	build := func() ([]model.Node, []model.Edge) {
 		b := New("r1")

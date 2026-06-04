@@ -103,6 +103,67 @@ func TestEventToGraph_NoSpawnEdgeForRootOrSelfParent(t *testing.T) {
 	}
 }
 
+func TestKeyBuilders(t *testing.T) {
+	cases := map[string]string{
+		RunKey("r1"):            "run:r1",
+		SyscallKey(59):          "sys:59",
+		SyscallKey(0):           "sys:0",
+		FileKey("/etc/passwd"):  "file:/etc/passwd",
+		FileKey(""):             "file:",
+		CapKey("CAP_SYS_ADMIN"): "cap:CAP_SYS_ADMIN",
+		NSKey("net", 5):         "ns:net:5",
+		NSKey("user", 0):        "ns:user:0",
+		BinaryKey("", ""):       "bin:path:",
+	}
+	for got, want := range cases {
+		if got != want {
+			t.Errorf("key = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestEventToGraph_CapProducesHeldCapEdge(t *testing.T) {
+	e := collector.BehaviorEvent{Kind: collector.EventCap, PID: 5, CapName: "CAP_NET_RAW", SyscallNr: 185, SyscallName: "capset"}
+	nodes, edges := EventToGraph("r1", e)
+	var capNode bool
+	for _, n := range nodes {
+		if n.Labels[0] == LabelCapability {
+			capNode = true
+			if n.Properties["name"] != "CAP_NET_RAW" {
+				t.Errorf("capability name = %v", n.Properties["name"])
+			}
+		}
+	}
+	var held bool
+	for _, ed := range edges {
+		if ed.Type == EdgeHeldCap && ed.ToKey == CapKey("CAP_NET_RAW") {
+			held = true
+		}
+	}
+	if !capNode || !held {
+		t.Errorf("expected Capability node + HELD_CAP edge (cap=%v held=%v)", capNode, held)
+	}
+}
+
+func TestEventToGraph_JoinNSProducesJoinedNSEdge(t *testing.T) {
+	e := collector.BehaviorEvent{Kind: collector.EventJoinNS, PID: 5, NSType: "net", NSID: 0, SyscallNr: 268, SyscallName: "setns"}
+	nodes, edges := EventToGraph("r1", e)
+	var nsNode, joined bool
+	for _, n := range nodes {
+		if n.Labels[0] == LabelNamespace && n.Properties["type"] == "net" {
+			nsNode = true
+		}
+	}
+	for _, ed := range edges {
+		if ed.Type == EdgeJoinedNS && ed.ToKey == NSKey("net", 0) {
+			joined = true
+		}
+	}
+	if !nsNode || !joined {
+		t.Errorf("expected Namespace node + JOINED_NS edge (ns=%v joined=%v)", nsNode, joined)
+	}
+}
+
 func TestEventToGraph_OpenCarriesMode(t *testing.T) {
 	e := collector.BehaviorEvent{Kind: collector.EventOpen, PID: 5, Path: "/etc/shadow", OpenMode: "r", SyscallNr: 257, SyscallName: "openat"}
 	_, edges := EventToGraph("r1", e)
