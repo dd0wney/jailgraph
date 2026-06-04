@@ -100,6 +100,18 @@ func splitCSV(s string) []string {
 	return out
 }
 
+// graphClient is the graphdb surface the subcommands need (satisfied by
+// *graphdb.Client). It is built via newGraphClient, a seam tests override with a
+// fake so the subcommand logic is unit-testable without a real server.
+type graphClient interface {
+	ingest.GraphClient
+	profile.GraphClient
+}
+
+var newGraphClient = func(baseURL, apiKey string) graphClient {
+	return graphdb.New(graphdb.Config{BaseURL: baseURL, APIKey: apiKey})
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  jailgraph learn [flags] -- <target> [args...]")
@@ -133,7 +145,7 @@ func runAudit(argv []string) error {
 		return &exitErr{2, fmt.Sprintf("unknown --mode %q (want security|reproducibility)", *modeStr)}
 	}
 
-	client := graphdb.New(graphdb.Config{BaseURL: *graphURL, APIKey: *apiKey})
+	client := newGraphClient(*graphURL, *apiKey)
 	ctx := context.Background()
 
 	collect := func(id string) (profile.Behavior, error) {
@@ -283,7 +295,7 @@ consume:
 	}
 
 	// Flush to graphdb.
-	client := graphdb.New(graphdb.Config{BaseURL: *graphURL, APIKey: *apiKey})
+	client := newGraphClient(*graphURL, *apiKey)
 	worker := ingest.NewWorker(client, logger, ingest.WithCacheRebuild(true), ingest.WithBatchSize(*batchSize))
 	stats, err := worker.Flush(ctx, sess, builder)
 	if err != nil {
@@ -314,7 +326,7 @@ func runProfile(argv []string) error {
 		return fmt.Errorf("--run is required")
 	}
 
-	client := graphdb.New(graphdb.Config{BaseURL: *graphURL, APIKey: *apiKey})
+	client := newGraphClient(*graphURL, *apiKey)
 	ctx := context.Background()
 	var behaviors []profile.Behavior
 	for _, id := range ids {

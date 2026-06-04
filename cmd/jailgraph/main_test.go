@@ -1,11 +1,79 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/dd0wney/jailgraph/internal/graphdb"
+	"github.com/dd0wney/jailgraph/internal/model"
 )
+
+// fakeGraph implements graphClient: it records writes and serves reads from
+// seeded maps, so the subcommand bodies run without a real graphdb server.
+type fakeGraph struct {
+	byLabel  map[string][]*graphdb.NodeResponse // NodesByLabel
+	byNode   map[uint64][]*graphdb.NodeResponse // Traverse neighbors
+	nextID   uint64
+	gotNodes []graphdb.NodeRequest
+	gotEdges []graphdb.EdgeRequest
+}
+
+func newFakeGraph() *fakeGraph {
+	return &fakeGraph{byLabel: map[string][]*graphdb.NodeResponse{}, byNode: map[uint64][]*graphdb.NodeResponse{}}
+}
+
+func (f *fakeGraph) CreateNode(_ context.Context, req graphdb.NodeRequest) (*graphdb.NodeResponse, error) {
+	f.nextID++
+	f.gotNodes = append(f.gotNodes, req)
+	return &graphdb.NodeResponse{ID: f.nextID, Labels: req.Labels, Properties: req.Properties}, nil
+}
+
+func (f *fakeGraph) BatchNodes(_ context.Context, reqs []graphdb.NodeRequest) ([]*graphdb.NodeResponse, error) {
+	out := make([]*graphdb.NodeResponse, 0, len(reqs))
+	for _, r := range reqs {
+		f.nextID++
+		f.gotNodes = append(f.gotNodes, r)
+		out = append(out, &graphdb.NodeResponse{ID: f.nextID, Labels: r.Labels, Properties: r.Properties})
+	}
+	return out, nil
+}
+
+func (f *fakeGraph) BatchEdges(_ context.Context, reqs []graphdb.EdgeRequest) ([]*graphdb.EdgeResponse, error) {
+	out := make([]*graphdb.EdgeResponse, 0, len(reqs))
+	for _, r := range reqs {
+		f.nextID++
+		f.gotEdges = append(f.gotEdges, r)
+		out = append(out, &graphdb.EdgeResponse{ID: f.nextID, FromNodeID: r.FromNodeID, ToNodeID: r.ToNodeID, Type: r.Type})
+	}
+	return out, nil
+}
+
+func (f *fakeGraph) NodesByLabel(_ context.Context, label string, _ int) ([]*graphdb.NodeResponse, error) {
+	return f.byLabel[label], nil
+}
+
+func (f *fakeGraph) Traverse(_ context.Context, startID uint64, _ int) ([]*graphdb.NodeResponse, error) {
+	return f.byNode[startID], nil
+}
+
+// withFakeGraph swaps the newGraphClient seam for the test's duration.
+func withFakeGraph(t *testing.T, f *fakeGraph) {
+	t.Helper()
+	orig := newGraphClient
+	newGraphClient = func(string, string) graphClient { return f }
+	t.Cleanup(func() { newGraphClient = orig })
+}
+
+func node(id uint64, label string, props map[string]any) *graphdb.NodeResponse {
+	if props == nil {
+		props = map[string]any{}
+	}
+	return &graphdb.NodeResponse{ID: id, Labels: []string{label}, Properties: props}
+}
 
 func TestSplitArgs(t *testing.T) {
 	cases := []struct {
@@ -108,6 +176,143 @@ func TestLoadFixture(t *testing.T) {
 	// Missing file → error.
 	if _, err := loadFixture(filepath.Join(dir, "nope.json")); err == nil {
 		t.Error("missing file should error")
+	}
+}
+
+func TestRunLearn_ReplayEndToEnd(t *testing.T) {
+	f := newFakeGraph()
+	withFakeGraph(t, f)
+	dir := t.TempDir()
+	fixture := filepath.Join(dir, "events.json")
+	// sh execs, opens a file: produces Run + Process + Binary + File + Syscall nodes.
+	if err := os.WriteFile(fixture, []byte(`[
+		{"Kind":1,"PID":10,"PPID":1,"Exe":"/bin/sh","SyscallNr":59,"SyscallName":"execve"},
+		{"Kind":3,"PID":10,"Path":"/etc/hostname","OpenMode":"r","SyscallNr":257,"SyscallName":"openat"}
+	]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runLearn([]string{"--replay", fixture, "--api-key", "x"}); err != nil {
+		t.Fatalf("runLearn: %v", err)
+	}
+	// A Run node was created first, marked partial coverage (replay isn't eBPF).
+	var sawRun bool
+	labels := map[string]int{}
+	for _, n := range f.gotNodes {
+		if len(n.Labels) == 0 {
+			continue
+		}
+		labels[n.Labels[0]]++
+		if n.Labels[0] == model.LabelRun {
+			sawRun = true
+			if n.Properties["coverage"] != "partial" {
+				t.Errorf("replay run coverage = %v, want partial", n.Properties["coverage"])
+			}
+		}
+	}
+	if !sawRun {
+		t.Error("expected a Run node to be created")
+	}
+	for _, want := range []string{model.LabelProcess, model.LabelBinary, model.LabelFile, model.LabelSyscall} {
+		if labels[want] == 0 {
+			t.Errorf("expected a %s node written; saw %v", want, labels)
+		}
+	}
+	if len(f.gotEdges) == 0 {
+		t.Error("expected edges written")
+	}
+}
+
+func TestRunProfile_FirejailToFile(t *testing.T) {
+	f := newFakeGraph()
+	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{node(1, model.LabelRun, map[string]any{"id": "r1", "coverage": "full"})}
+	f.byLabel[model.LabelProcess] = []*graphdb.NodeResponse{node(10, model.LabelProcess, map[string]any{model.PropKey: model.ProcessKey("r1", 10)})}
+	f.byNode[10] = []*graphdb.NodeResponse{
+		node(20, model.LabelSyscall, map[string]any{"name": "openat"}),
+		node(21, model.LabelFile, map[string]any{"path": "/etc/hostname"}),
+		node(22, model.LabelBinary, map[string]any{"path": "/bin/sh"}),
+	}
+	withFakeGraph(t, f)
+	out := filepath.Join(t.TempDir(), "prof")
+	if err := runProfile([]string{"--run", "r1", "--format", "firejail", "--out", out, "--api-key", "x"}); err != nil {
+		t.Fatalf("runProfile: %v", err)
+	}
+	data, err := os.ReadFile(out + ".profile")
+	if err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	if !strings.Contains(string(data), "whitelist /etc") {
+		t.Errorf("firejail profile missing evidence-based whitelist:\n%s", data)
+	}
+}
+
+func TestRunProfile_EnforceNeedsFullCoverage(t *testing.T) {
+	f := newFakeGraph()
+	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{node(1, model.LabelRun, map[string]any{"id": "r1", "coverage": "partial"})}
+	withFakeGraph(t, f)
+	err := runProfile([]string{"--run", "r1", "--enforce", "--format", "seccomp", "--api-key", "x"})
+	if err == nil {
+		t.Fatal("expected --enforce on a partial-coverage run to error")
+	}
+}
+
+func TestRunProfile_MissingRun(t *testing.T) {
+	withFakeGraph(t, newFakeGraph())
+	if err := runProfile([]string{"--api-key", "x"}); err == nil {
+		t.Fatal("expected error when --run is missing")
+	}
+}
+
+func auditFake() *fakeGraph {
+	f := newFakeGraph()
+	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{
+		node(1, model.LabelRun, map[string]any{"id": "base", "coverage": "full"}),
+		node(2, model.LabelRun, map[string]any{"id": "cand", "coverage": "full"}),
+	}
+	f.byLabel[model.LabelProcess] = []*graphdb.NodeResponse{
+		node(10, model.LabelProcess, map[string]any{model.PropKey: model.ProcessKey("base", 10)}),
+		node(20, model.LabelProcess, map[string]any{model.PropKey: model.ProcessKey("cand", 20)}),
+	}
+	return f
+}
+
+func TestRunAudit_NoDriftReturnsNil(t *testing.T) {
+	f := auditFake()
+	// Both runs invoke the same syscall → no stable-dimension drift.
+	f.byNode[10] = []*graphdb.NodeResponse{node(30, model.LabelSyscall, map[string]any{"name": "openat"})}
+	f.byNode[20] = []*graphdb.NodeResponse{node(31, model.LabelSyscall, map[string]any{"name": "openat"})}
+	withFakeGraph(t, f)
+	if err := runAudit([]string{"--baseline", "base", "--against", "cand", "--api-key", "x"}); err != nil {
+		t.Errorf("no-drift audit should return nil, got %v", err)
+	}
+}
+
+func TestRunAudit_DriftExitsOne(t *testing.T) {
+	f := auditFake()
+	// Candidate invokes a NEW dangerous syscall → additive drift (security mode).
+	f.byNode[10] = []*graphdb.NodeResponse{node(30, model.LabelSyscall, map[string]any{"name": "openat"})}
+	f.byNode[20] = []*graphdb.NodeResponse{
+		node(31, model.LabelSyscall, map[string]any{"name": "openat"}),
+		node(32, model.LabelSyscall, map[string]any{"name": "setns"}),
+	}
+	withFakeGraph(t, f)
+	err := runAudit([]string{"--baseline", "base", "--against", "cand", "--api-key", "x"})
+	code, _ := resolveExit(err)
+	if code != 1 {
+		t.Errorf("drift should exit 1, got code %d (err %v)", code, err)
+	}
+}
+
+func TestRunAudit_FlagErrorsExitTwo(t *testing.T) {
+	withFakeGraph(t, newFakeGraph())
+	for _, argv := range [][]string{
+		{},                  // missing both
+		{"--baseline", "b"}, // missing --against
+		{"--baseline", "b", "--against", "c", "--mode", "x"}, // bad mode
+	} {
+		err := runAudit(argv)
+		if code, _ := resolveExit(err); code != 2 {
+			t.Errorf("runAudit(%v) exit = %d, want 2 (err %v)", argv, code, err)
+		}
 	}
 }
 
