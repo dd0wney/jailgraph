@@ -194,3 +194,11 @@ Increments 1–4 are implemented and tested. The portable pipeline
 are validated by unit tests and end-to-end runs against a real graphdb. Both
 Linux backends are validated at runtime on linux/arm64 (Docker): the seccomp
 trace and the eBPF tree test (descendants + SPAWN + EXEC + OPEN + full syscalls).
+
+## License
+
+Apache-2.0 (see `LICENSE` and `NOTICE`), with one exception required by the
+kernel: the eBPF program `internal/ebpf/bpf/trace.bpf.c` and its generated object
+`internal/ebpf/trace_bpfel.o` are **GPL-2.0**, because they call GPL-only BPF
+helpers (`bpf_probe_read_kernel`, `bpf_d_path`, …) that the kernel will not load
+under a non-GPL license. All other code (the Go userspace) is Apache-2.0.

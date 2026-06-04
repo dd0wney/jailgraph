@@ -1,0 +1,13 @@
+jailgraph
+Copyright 2026 Darragh Downey
+
+Licensed under the Apache License, Version 2.0 (the "License"); see the LICENSE
+file. You may not use this project except in compliance with the License.
+
+Exception — eBPF object (GPL-2.0):
+The eBPF program internal/ebpf/bpf/trace.bpf.c and its generated object
+internal/ebpf/trace_bpfel.o are licensed under GPL-2.0. This is a kernel
+requirement, not a preference: the program calls GPL-only BPF helpers
+(bpf_probe_read_kernel, bpf_d_path, ...) and the kernel refuses to load a BPF
+program using them unless it declares a GPL-compatible license. All other code
+(the Go userspace) is Apache-2.0.
