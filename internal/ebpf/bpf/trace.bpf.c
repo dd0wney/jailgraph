@@ -14,9 +14,11 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
+#include <bpf/bpf_tracing.h>
 
 #define EVENT_SPAWN 1
 #define EVENT_EXEC 2
+#define EVENT_OPEN 3
 
 struct event {
 	__u32 kind;
@@ -124,6 +126,30 @@ int handle_exec(struct bpf_raw_tracepoint_args *ctx)
 	e->ppid = 0;
 	e->path[0] = 0;
 	bpf_probe_read_kernel_str(e->path, sizeof(e->path), filename);
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+// handle_open fires on every file open in a tracked process. We use an fentry
+// on security_file_open (a BTF-typed hook) with bpf_d_path() — the blessed,
+// allowlisted path-resolution helper — rather than reading the openat pathname
+// arg from pt_regs (which uses the syscall, not function, calling convention and
+// yields garbage). This gives fully-resolved absolute paths.
+SEC("fentry/security_file_open")
+int BPF_PROG(handle_open, struct file *file)
+{
+	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
+	if (!bpf_map_lookup_elem(&tracked, &tgid))
+		return 0;
+
+	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e)
+		return 0;
+	e->kind = EVENT_OPEN;
+	e->pid = tgid;
+	e->ppid = 0;
+	e->path[0] = 0;
+	bpf_d_path(&file->f_path, e->path, sizeof(e->path));
 	bpf_ringbuf_submit(e, 0);
 	return 0;
 }

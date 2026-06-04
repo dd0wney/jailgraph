@@ -37,6 +37,7 @@ import (
 const (
 	evSpawn uint32 = 1
 	evExec  uint32 = 2
+	evOpen  uint32 = 3
 )
 
 // rawEvent mirrors `struct event` in trace.bpf.c (all fields 4-byte aligned).
@@ -110,6 +111,14 @@ func (c *ebpfCollector) Start(ctx context.Context) (<-chan collector.BehaviorEve
 		c.cleanup()
 		return nil, err
 	}
+	// fentry (security_file_open) attaches via the tracing link, not a raw
+	// tracepoint. bpf_d_path is allowlisted for this hook.
+	openLink, err := link.AttachTracing(link.TracingOptions{Program: c.objs.HandleOpen})
+	if err != nil {
+		c.cleanup()
+		return nil, fmt.Errorf("attach security_file_open: %w", err)
+	}
+	c.links = append(c.links, openLink)
 
 	rd, err := ringbuf.NewReader(c.objs.Events)
 	if err != nil {
@@ -178,6 +187,9 @@ func (c *ebpfCollector) toBehavior(ev rawEvent) collector.BehaviorEvent {
 	case evExec:
 		be.Kind = collector.EventExec
 		be.Exe = cstr(ev.Path[:])
+	case evOpen:
+		be.Kind = collector.EventOpen
+		be.Path = cstr(ev.Path[:])
 	}
 	return be
 }

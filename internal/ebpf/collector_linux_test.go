@@ -45,6 +45,7 @@ func TestEBPF_TreeCoverageAndSpawn(t *testing.T) {
 
 	seen := map[string]bool{}
 	execs := map[string]bool{}
+	opens := map[string]bool{}
 	var spawns int
 	var lastSpawnChild, lastSpawnParent int32
 	for e := range events {
@@ -56,6 +57,8 @@ func TestEBPF_TreeCoverageAndSpawn(t *testing.T) {
 			lastSpawnChild, lastSpawnParent = e.PID, e.PPID
 		case collector.EventExec:
 			execs[e.Exe] = true
+		case collector.EventOpen:
+			opens[e.Path] = true
 		}
 	}
 	_ = coll.Wait()
@@ -80,7 +83,11 @@ func TestEBPF_TreeCoverageAndSpawn(t *testing.T) {
 	if !execs["/bin/cat"] && !execs["/usr/bin/cat"] {
 		t.Errorf("expected an EXEC of cat; saw execs %v", keysOfStr(execs))
 	}
-	t.Logf("eBPF tree: %d syscalls, %d spawns (last %d->%d), execs %v", len(seen), spawns, lastSpawnParent, lastSpawnChild, keysOfStr(execs))
+	// OPEN of the exact file path (fentry security_file_open + bpf_d_path).
+	if !opens["/etc/hostname"] {
+		t.Errorf("expected an OPEN of /etc/hostname with the resolved path; saw opens %v", keysOfStr(opens))
+	}
+	t.Logf("eBPF tree: %d syscalls, %d spawns, execs %v, opened %d files", len(seen), spawns, keysOfStr(execs), len(opens))
 }
 
 func keysOfStr(m map[string]bool) []string {
