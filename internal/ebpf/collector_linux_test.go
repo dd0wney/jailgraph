@@ -18,13 +18,14 @@ import (
 // sys_enter tracepoint must observe the FULL syscall set — dozens of distinct
 // syscalls including the read/write hot path. Requires a Linux kernel with BTF +
 // raw-tracepoint support and CAP_BPF (run privileged in CI/Docker).
-func TestEBPF_FullSyscallCoverage(t *testing.T) {
-	// Trace /bin/cat directly: v1.0 follows only the seeded PID (descendant
-	// following is v1.1), so the target must make the syscalls itself. cat reads
-	// the file and writes it out — exercising the read/write hot path the
-	// seccomp backend can't observe. Run the container with --pid=host so the
-	// BPF root-ns PID matches the seeded PID (on a real host they always match).
-	coll, err := NewCollector("/bin/cat", []string{"/etc/hostname"}, Config{})
+func TestEBPF_TreeCoverageAndSpawn(t *testing.T) {
+	// Trace a process TREE, not a single process: sh forks+execs cat. v1.1
+	// descendant-following must capture cat's syscalls (read/write of the file)
+	// even though only sh was launched — that's the discriminator vs v1.0 (which
+	// saw only the seeded PID). Also asserts a SPAWNED sh->cat edge with the real
+	// child pid. Run with --pid=host so BPF root-ns tgids match (real host always
+	// matches).
+	coll, err := NewCollector("/bin/sh", []string{"-c", "cat /etc/hostname >/dev/null"}, Config{})
 	if err != nil {
 		t.Fatalf("NewCollector: %v", err)
 	}
@@ -43,29 +44,36 @@ func TestEBPF_FullSyscallCoverage(t *testing.T) {
 	}()
 
 	seen := map[string]bool{}
-	var total int
+	var spawns int
+	var lastSpawnChild, lastSpawnParent int32
 	for e := range events {
-		if e.Kind == collector.EventSyscall {
-			total++
+		switch e.Kind {
+		case collector.EventSyscall:
 			seen[e.SyscallName] = true
+		case collector.EventSpawn:
+			spawns++
+			lastSpawnChild, lastSpawnParent = e.PID, e.PPID
 		}
 	}
 	_ = coll.Wait()
 
-	// Full coverage: even a trivial `cat` makes ~17 distinct syscalls. The
-	// threshold is conservative to absorb the startup race (the earliest few
-	// syscalls land before the PID is seeded); the hot-path assertion below is
-	// the real discriminator vs the seccomp backend.
-	if len(seen) < 12 {
-		t.Errorf("expected full syscall coverage (>=12 distinct), got %d: %v", len(seen), keysOf(seen))
-	}
-	// The hot path the seccomp backend can never see must be present.
-	for _, hot := range []string{"read", "write", "mmap"} {
+	// read/write come from CAT (a descendant). Their presence proves
+	// descendant-following — they would be absent in v1.0 (seeded-PID-only).
+	for _, hot := range []string{"read", "write"} {
 		if !seen[hot] {
-			t.Errorf("expected hot-path syscall %q in eBPF coverage (seccomp can't see it); got %v", hot, keysOf(seen))
+			t.Errorf("expected descendant (cat) hot-path syscall %q; got %v", hot, keysOf(seen))
 		}
 	}
-	t.Logf("eBPF observed %d distinct syscalls across %d events", len(seen), total)
+	if len(seen) < 12 {
+		t.Errorf("expected full tree coverage (>=12 distinct), got %d: %v", len(seen), keysOf(seen))
+	}
+	// At least one SPAWNED edge (sh -> cat) with a real child pid.
+	if spawns == 0 {
+		t.Error("expected at least one SPAWN event (sh forking cat)")
+	} else if lastSpawnChild == 0 || lastSpawnParent == 0 {
+		t.Errorf("SPAWN event missing pids: child=%d parent=%d", lastSpawnChild, lastSpawnParent)
+	}
+	t.Logf("eBPF tree: %d distinct syscalls, %d spawns (last %d->%d)", len(seen), spawns, lastSpawnParent, lastSpawnChild)
 }
 
 func keysOf(m map[string]bool) []string {

@@ -54,6 +54,7 @@ type traceSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type traceProgramSpecs struct {
+	HandleFork     *ebpf.ProgramSpec `ebpf:"handle_fork"`
 	HandleSysEnter *ebpf.ProgramSpec `ebpf:"handle_sys_enter"`
 }
 
@@ -61,8 +62,10 @@ type traceProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type traceMapSpecs struct {
-	Seen    *ebpf.MapSpec `ebpf:"seen"`
-	Tracked *ebpf.MapSpec `ebpf:"tracked"`
+	Events   *ebpf.MapSpec `ebpf:"events"`
+	Launcher *ebpf.MapSpec `ebpf:"launcher"`
+	Seen     *ebpf.MapSpec `ebpf:"seen"`
+	Tracked  *ebpf.MapSpec `ebpf:"tracked"`
 }
 
 // traceVariableSpecs contains global variables before they are loaded into the kernel.
@@ -91,12 +94,16 @@ func (o *traceObjects) Close() error {
 //
 // It can be passed to loadTraceObjects or ebpf.CollectionSpec.LoadAndAssign.
 type traceMaps struct {
-	Seen    *ebpf.Map `ebpf:"seen"`
-	Tracked *ebpf.Map `ebpf:"tracked"`
+	Events   *ebpf.Map `ebpf:"events"`
+	Launcher *ebpf.Map `ebpf:"launcher"`
+	Seen     *ebpf.Map `ebpf:"seen"`
+	Tracked  *ebpf.Map `ebpf:"tracked"`
 }
 
 func (m *traceMaps) Close() error {
 	return _TraceClose(
+		m.Events,
+		m.Launcher,
 		m.Seen,
 		m.Tracked,
 	)
@@ -112,11 +119,13 @@ type traceVariables struct {
 //
 // It can be passed to loadTraceObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tracePrograms struct {
+	HandleFork     *ebpf.Program `ebpf:"handle_fork"`
 	HandleSysEnter *ebpf.Program `ebpf:"handle_sys_enter"`
 }
 
 func (p *tracePrograms) Close() error {
 	return _TraceClose(
+		p.HandleFork,
 		p.HandleSysEnter,
 	)
 }
