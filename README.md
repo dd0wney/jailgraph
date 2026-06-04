@@ -113,12 +113,20 @@ Be precise about what each is:
 
 - The firejail **filesystem + exec whitelist is evidence-based** — exactly the
   files opened and binaries exec'd during the run. This is the real value-add.
-- The **seccomp policy is "permissive baseline minus dangerous-syscall gating,"
-  not a least-privilege allowlist.** The collector watches only rare,
-  security-relevant syscalls (not the hot path), so the profile *denies the
-  dangerous syscalls the run never used* (`setns`, `unshare`, `capset`, legacy
-  `open`, `fork`, …) over a default-allow baseline. A tight allowlist needs the
-  eBPF backend's full coverage (a later increment).
+- The **seccomp policy depends on coverage** (recorded on the run):
+  - **Partial coverage (seccomp backend):** default-ALLOW minus the dangerous
+    syscalls the run never used (`setns`, `unshare`, `capset`, legacy `open`,
+    `fork`, …). NOT a least-privilege allowlist.
+  - **Full coverage (eBPF backend):** a true **least-privilege allowlist**
+    (default-deny). It permits the observed syscalls plus a small *safe runtime
+    floor* (universal startup syscalls, excluding every dangerous one) and denies
+    everything else. It defaults to **complain mode** (`SCMP_ACT_LOG`) — deploy
+    it safely, it breaks nothing and logs would-be denials so you can confirm
+    coverage. `--enforce` switches to `SCMP_ACT_ERRNO`, and is **refused** if the
+    run was lossy or any observed syscall is recorded by number only (which would
+    be wrongly denied). Build the baseline from a **union of representative runs**
+    before enforcing — one run misses error/signal paths, and v1.0 eBPF traces
+    only the seeded PID (not children).
 - Capability/namespace policy is **not** emitted from observation yet; firejail
   output uses a conservative `caps.drop all` default, labeled as such.
 - A **lossy** run (events were dropped) is refused by default — the profile would

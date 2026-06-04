@@ -4,10 +4,13 @@ package ebpf
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/dd0wney/jailgraph/internal/collector"
+	"github.com/dd0wney/jailgraph/internal/profile"
 )
 
 // TestEBPF_FullSyscallCoverage is the discriminating test for the eBPF backend:
@@ -71,4 +74,81 @@ func keysOf(m map[string]bool) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestEBPF_EnforceProfileFromRealTrace is the payoff check: a full-coverage eBPF
+// trace must feed the profile generator's default-deny path. With the expanded
+// nr→name table a simple program's syscalls should all resolve, so an ENFORCING
+// (default-deny SCMP_ACT_ERRNO) allowlist is emitted that permits the observed
+// syscalls. If any syscall is still number-only, the renderer must refuse to
+// enforce (catching the footgun) rather than silently deny it.
+func TestEBPF_EnforceProfileFromRealTrace(t *testing.T) {
+	coll, err := NewCollector("/bin/cat", []string{"/etc/hostname"}, Config{})
+	if err != nil {
+		t.Fatalf("NewCollector: %v", err)
+	}
+	defer coll.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	events, err := coll.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	go func() {
+		for range coll.Errors() {
+		}
+	}()
+
+	b := profile.Behavior{RunID: "ebpf-cat", FullCoverage: true, Syscalls: map[string]bool{}}
+	for e := range events {
+		if e.Kind == collector.EventSyscall {
+			b.Syscalls[e.SyscallName] = true
+		}
+	}
+	_ = coll.Wait()
+
+	data, err := profile.RenderSeccompOCI(b, profile.SeccompOptions{Enforce: true})
+	if err != nil {
+		// Acceptable ONLY if it's the safe refusal for unnamed syscalls.
+		if strings.Contains(err.Error(), "recorded by number only") {
+			t.Logf("enforce safely refused (expand nr→name table to enable): %v", err)
+			return
+		}
+		t.Fatalf("unexpected enforce error: %v", err)
+	}
+	// Enforcing profile must be default-deny and permit the observed hot path.
+	if !strings.Contains(string(data), "SCMP_ACT_ERRNO") {
+		t.Error("enforcing profile should be default-deny (SCMP_ACT_ERRNO)")
+	}
+	var prof struct {
+		DefaultAction string `json:"defaultAction"`
+		Syscalls      []struct {
+			Names  []string `json:"names"`
+			Action string   `json:"action"`
+		} `json:"syscalls"`
+	}
+	if err := json.Unmarshal(data, &prof); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if prof.DefaultAction != "SCMP_ACT_ERRNO" {
+		t.Errorf("default action = %q, want SCMP_ACT_ERRNO", prof.DefaultAction)
+	}
+	var allowed []string
+	for _, r := range prof.Syscalls {
+		if r.Action == "SCMP_ACT_ALLOW" {
+			allowed = append(allowed, r.Names...)
+		}
+	}
+	for _, want := range []string{"read", "write"} {
+		found := false
+		for _, a := range allowed {
+			if a == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("enforcing allowlist must permit observed %q", want)
+		}
+	}
+	t.Logf("enforcing default-deny profile permits %d syscalls", len(allowed))
 }

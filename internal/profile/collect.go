@@ -39,6 +39,8 @@ func Collect(ctx context.Context, client GraphClient, runID string, pageLimit in
 			found = true
 			b.Target, _ = r.Properties["target"].(string)
 			b.Lossy, _ = r.Properties["lossy"].(bool)
+			cov, _ := r.Properties["coverage"].(string)
+			b.FullCoverage = cov == "full"
 			break
 		}
 	}

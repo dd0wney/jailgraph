@@ -18,10 +18,21 @@ type Session struct {
 	StartedAt time.Time
 	EndedAt   time.Time
 	Lossy     bool
+	// Coverage records whether the collector observed the FULL syscall set
+	// ("full", eBPF) or only a curated subset ("partial", seccomp). It governs
+	// whether a least-privilege (default-deny) profile can be generated from
+	// this run. Empty is treated as "partial" (the safe default).
+	Coverage string
 	// Dropped maps a human-readable event-kind name to the number of events of
 	// that kind the buffer dropped.
 	Dropped map[string]int64
 }
+
+// Coverage values recorded on a Run.
+const (
+	CoverageFull    = "full"
+	CoveragePartial = "partial"
+)
 
 // New starts a session for target at the given time, assigning a random id.
 func New(target string, startedAt time.Time) *Session {

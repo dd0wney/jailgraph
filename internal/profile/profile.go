@@ -48,6 +48,11 @@ type Behavior struct {
 	Files    []string        // observed opened paths
 	Binaries []string        // observed exec'd binary paths
 	Lossy    bool            // the trace dropped events; profile is unsafe
+	// FullCoverage is true only when the collector observed the COMPLETE syscall
+	// set (eBPF). It gates default-deny (least-privilege) seccomp generation: a
+	// default-deny profile from partial coverage would deny syscalls the program
+	// actually needs.
+	FullCoverage bool
 }
 
 // DeniedSyscalls returns the gateable syscalls the run never invoked — the ones
@@ -76,11 +81,31 @@ type ociSyscallRule struct {
 	Action string   `json:"action"`
 }
 
-// RenderSeccompOCI emits an OCI seccomp profile. It is default-ALLOW with an
-// explicit ERRNO deny list — an honest encoding of "permissive baseline minus
-// the dangerous syscalls this run never used". It is deliberately NOT
-// default-deny, because the collector lacks full syscall coverage.
-func RenderSeccompOCI(b Behavior) ([]byte, error) {
+// SeccompOptions tunes seccomp rendering.
+type SeccompOptions struct {
+	// Enforce requests an enforcing (SCMP_ACT_ERRNO default) least-privilege
+	// profile instead of the safe complain-mode (SCMP_ACT_LOG) default. Honored
+	// only for full-coverage runs, and refused when the trace is lossy or any
+	// observed syscall is unnamed (which would be wrongly denied).
+	Enforce bool
+}
+
+// RenderSeccompOCI emits an OCI seccomp profile, choosing the construction by
+// coverage:
+//   - Partial coverage (seccomp backend): default-ALLOW minus the dangerous
+//     syscalls the run never used. NOT a least-privilege allowlist.
+//   - Full coverage (eBPF backend): a least-privilege allowlist (default-deny).
+//     Defaults to complain mode (SCMP_ACT_LOG) — safe to deploy, breaks nothing,
+//     logs would-be denials — with enforcing mode gated behind opts.Enforce.
+func RenderSeccompOCI(b Behavior, opts SeccompOptions) ([]byte, error) {
+	if !b.FullCoverage {
+		return renderGatingSeccomp(b), nil
+	}
+	return renderAllowlistSeccomp(b, opts)
+}
+
+// renderGatingSeccomp is the partial-coverage profile (default-allow + gating).
+func renderGatingSeccomp(b Behavior) []byte {
 	denied := b.DeniedSyscalls()
 	prof := ociSeccomp{
 		DefaultAction: "SCMP_ACT_ALLOW",
@@ -88,13 +113,82 @@ func RenderSeccompOCI(b Behavior) ([]byte, error) {
 		Comment: map[string]string{
 			"generated_by": "jailgraph",
 			"run":          b.RunID,
-			"strength":     "baseline-allow minus dangerous-syscall gating; NOT a least-privilege allowlist (collector lacks hot-path coverage)",
+			"strength":     "baseline-allow minus dangerous-syscall gating; NOT a least-privilege allowlist (partial syscall coverage). Trace with the eBPF collector for a tight allowlist.",
 		},
 	}
 	if len(denied) > 0 {
 		prof.Syscalls = append(prof.Syscalls, ociSyscallRule{Names: denied, Action: "SCMP_ACT_ERRNO"})
 	}
+	data, _ := json.MarshalIndent(prof, "", "  ")
+	return data
+}
+
+// renderAllowlistSeccomp is the full-coverage least-privilege profile. Allow =
+// the observed syscalls UNION the safe runtime floor. Default action is LOG
+// (complain) unless enforcing is explicitly requested and safe.
+func renderAllowlistSeccomp(b Behavior, opts SeccompOptions) ([]byte, error) {
+	var unnamed []string
+	allow := map[string]struct{}{}
+	for sc := range b.Syscalls {
+		if isUnnamed(sc) {
+			unnamed = append(unnamed, sc) // recorded by number only — can't allowlist by name
+			continue
+		}
+		allow[sc] = struct{}{}
+	}
+	// The safe floor papers over v1.0 coverage holes (startup race, missed
+	// children/error paths). It contains only universal runtime syscalls and
+	// excludes every dangerous/gateable one, so it never re-permits what gating
+	// would deny.
+	for _, sc := range baselineFloor {
+		allow[sc] = struct{}{}
+	}
+
+	defaultAction := "SCMP_ACT_LOG"
+	mode := "complain (SCMP_ACT_LOG): enforces nothing, logs would-be denials. Validate coverage, then regenerate with --enforce."
+	if opts.Enforce {
+		if b.Lossy {
+			return nil, fmt.Errorf("refusing to enforce: run %s was lossy (incomplete trace)", b.RunID)
+		}
+		if len(unnamed) > 0 {
+			sort.Strings(unnamed)
+			return nil, fmt.Errorf("refusing to enforce: %d observed syscalls are recorded by number only and would be wrongly denied (%s); complete the nr→name table or use complain mode", len(unnamed), strings.Join(unnamed, ","))
+		}
+		defaultAction = "SCMP_ACT_ERRNO"
+		mode = "ENFORCING (SCMP_ACT_ERRNO). Built from observed runs; validate coverage (children, error/signal paths) before production. Prefer a union of representative runs."
+	}
+
+	prof := ociSeccomp{
+		DefaultAction: defaultAction,
+		Syscalls:      []ociSyscallRule{{Names: sortedKeys(allow), Action: "SCMP_ACT_ALLOW"}},
+		Comment: map[string]string{
+			"generated_by": "jailgraph",
+			"run":          b.RunID,
+			"strength":     "least-privilege allowlist from full (eBPF) syscall coverage + a safe runtime floor",
+			"mode":         mode,
+		},
+	}
 	return json.MarshalIndent(prof, "", "  ")
+}
+
+func isUnnamed(name string) bool { return strings.HasPrefix(name, "sys_") }
+
+// baselineFloor is the set of universal runtime syscalls a default-deny profile
+// must permit so it does not break on startup/coverage holes. It deliberately
+// contains NO dangerous/gateable syscall (no execve, clone, setns, unshare,
+// capset, ptrace, mount, bpf, ...), so it never undoes the point of an
+// allowlist. It shrinks toward empty as coverage improves.
+var baselineFloor = []string{
+	"read", "write", "close", "lseek", "fstat", "newfstatat", "statx",
+	"mmap", "munmap", "mremap", "mprotect", "madvise", "brk",
+	"rt_sigaction", "rt_sigprocmask", "rt_sigreturn", "sigaltstack",
+	"exit", "exit_group", "futex", "nanosleep", "clock_gettime", "clock_nanosleep",
+	"getpid", "gettid", "getuid", "geteuid", "getgid", "getegid",
+	"getrandom", "set_robust_list", "set_tid_address", "rseq",
+	"sched_yield", "sched_getaffinity", "restart_syscall",
+	"fcntl", "ioctl", "getdents64", "readlinkat", "faccessat", "faccessat2",
+	"ppoll", "poll", "epoll_wait", "epoll_pwait", "epoll_create1", "epoll_ctl",
+	"dup", "dup3", "pipe2", "uname", "sysinfo", "prlimit64", "arch_prctl",
 }
 
 // RenderFirejail emits a firejail .profile. Its filesystem/exec whitelist is

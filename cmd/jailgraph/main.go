@@ -199,6 +199,13 @@ func runLearn(argv []string) error {
 	}
 
 	sess := run.New(label, time.Now())
+	// Only the eBPF backend observes the full syscall set; seccomp and replay
+	// are partial (a tight default-deny profile needs full coverage).
+	if *replay == "" && *collectorK == "ebpf" {
+		sess.Coverage = run.CoverageFull
+	} else {
+		sess.Coverage = run.CoveragePartial
+	}
 	builder := aggregate.New(sess.ID)
 	ring := buffer.New(*bufSize)
 
@@ -285,6 +292,7 @@ func runProfile(argv []string) error {
 		format   = fs.String("format", "firejail", "output format: firejail | seccomp | both")
 		out      = fs.String("out", "", "write to this file/prefix instead of stdout")
 		force    = fs.Bool("force", false, "generate even from a lossy (incomplete) trace")
+		enforce  = fs.Bool("enforce", false, "emit an ENFORCING least-privilege seccomp profile (full-coverage runs only; default is safe complain/LOG mode)")
 	)
 	if err := fs.Parse(argv); err != nil {
 		return err
@@ -304,11 +312,16 @@ func runProfile(argv []string) error {
 		return fmt.Errorf("run %s was lossy (incomplete trace); profile would be over-restrictive. Re-run with --force to override", *runID)
 	}
 
+	if *enforce && !b.FullCoverage {
+		return fmt.Errorf("--enforce needs a full-coverage run (trace with --collector ebpf); run %s has partial coverage", *runID)
+	}
+	seccompOpts := profile.SeccompOptions{Enforce: *enforce}
+
 	switch *format {
 	case "firejail":
 		return emit(*out, ".profile", []byte(profile.RenderFirejail(b)))
 	case "seccomp":
-		data, err := profile.RenderSeccompOCI(b)
+		data, err := profile.RenderSeccompOCI(b, seccompOpts)
 		if err != nil {
 			return err
 		}
@@ -317,7 +330,7 @@ func runProfile(argv []string) error {
 		if err := emit(*out, ".profile", []byte(profile.RenderFirejail(b))); err != nil {
 			return err
 		}
-		data, err := profile.RenderSeccompOCI(b)
+		data, err := profile.RenderSeccompOCI(b, seccompOpts)
 		if err != nil {
 			return err
 		}

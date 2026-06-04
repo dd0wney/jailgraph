@@ -122,11 +122,16 @@ func (w *Worker) Flush(ctx context.Context, sess *run.Session, b *aggregate.Buil
 
 func (w *Worker) createRunNode(ctx context.Context, sess *run.Session) error {
 	key := model.RunKey(sess.ID)
+	coverage := sess.Coverage
+	if coverage == "" {
+		coverage = run.CoveragePartial // safe default
+	}
 	props := map[string]any{
 		"id":          sess.ID,
 		"target":      sess.Target,
 		"started_at":  sess.StartedAt.UTC().Format(time.RFC3339Nano),
 		"lossy":       sess.Lossy,
+		"coverage":    coverage,
 		model.PropKey: key,
 	}
 	if !sess.EndedAt.IsZero() {
