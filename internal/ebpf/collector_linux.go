@@ -36,6 +36,7 @@ import (
 // event kinds, mirroring trace.bpf.c.
 const (
 	evSpawn uint32 = 1
+	evExec  uint32 = 2
 )
 
 // rawEvent mirrors `struct event` in trace.bpf.c (all fields 4-byte aligned).
@@ -105,6 +106,10 @@ func (c *ebpfCollector) Start(ctx context.Context) (<-chan collector.BehaviorEve
 		c.cleanup()
 		return nil, err
 	}
+	if err := c.attach("sched_process_exec", c.objs.HandleExec); err != nil {
+		c.cleanup()
+		return nil, err
+	}
 
 	rd, err := ringbuf.NewReader(c.objs.Events)
 	if err != nil {
@@ -170,8 +175,19 @@ func (c *ebpfCollector) toBehavior(ev rawEvent) collector.BehaviorEvent {
 	switch ev.Kind {
 	case evSpawn:
 		be.Kind = collector.EventSpawn
+	case evExec:
+		be.Kind = collector.EventExec
+		be.Exe = cstr(ev.Path[:])
 	}
 	return be
+}
+
+// cstr converts a NUL-terminated C char array to a Go string.
+func cstr(b []byte) string {
+	if i := bytes.IndexByte(b, 0); i >= 0 {
+		return string(b[:i])
+	}
+	return string(b)
 }
 
 // finalize implements the shutdown ordering: wait for target exit, let the

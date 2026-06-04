@@ -54,6 +54,7 @@ type traceSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type traceProgramSpecs struct {
+	HandleExec     *ebpf.ProgramSpec `ebpf:"handle_exec"`
 	HandleFork     *ebpf.ProgramSpec `ebpf:"handle_fork"`
 	HandleSysEnter *ebpf.ProgramSpec `ebpf:"handle_sys_enter"`
 }
@@ -119,12 +120,14 @@ type traceVariables struct {
 //
 // It can be passed to loadTraceObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tracePrograms struct {
+	HandleExec     *ebpf.Program `ebpf:"handle_exec"`
 	HandleFork     *ebpf.Program `ebpf:"handle_fork"`
 	HandleSysEnter *ebpf.Program `ebpf:"handle_sys_enter"`
 }
 
 func (p *tracePrograms) Close() error {
 	return _TraceClose(
+		p.HandleExec,
 		p.HandleFork,
 		p.HandleSysEnter,
 	)

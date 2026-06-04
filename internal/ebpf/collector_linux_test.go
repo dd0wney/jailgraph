@@ -44,6 +44,7 @@ func TestEBPF_TreeCoverageAndSpawn(t *testing.T) {
 	}()
 
 	seen := map[string]bool{}
+	execs := map[string]bool{}
 	var spawns int
 	var lastSpawnChild, lastSpawnParent int32
 	for e := range events {
@@ -53,6 +54,8 @@ func TestEBPF_TreeCoverageAndSpawn(t *testing.T) {
 		case collector.EventSpawn:
 			spawns++
 			lastSpawnChild, lastSpawnParent = e.PID, e.PPID
+		case collector.EventExec:
+			execs[e.Exe] = true
 		}
 	}
 	_ = coll.Wait()
@@ -73,7 +76,19 @@ func TestEBPF_TreeCoverageAndSpawn(t *testing.T) {
 	} else if lastSpawnChild == 0 || lastSpawnParent == 0 {
 		t.Errorf("SPAWN event missing pids: child=%d parent=%d", lastSpawnChild, lastSpawnParent)
 	}
-	t.Logf("eBPF tree: %d distinct syscalls, %d spawns (last %d->%d)", len(seen), spawns, lastSpawnParent, lastSpawnChild)
+	// EXEC of the descendant binary, with the resolved path (CO-RE bprm->filename).
+	if !execs["/bin/cat"] && !execs["/usr/bin/cat"] {
+		t.Errorf("expected an EXEC of cat; saw execs %v", keysOfStr(execs))
+	}
+	t.Logf("eBPF tree: %d syscalls, %d spawns (last %d->%d), execs %v", len(seen), spawns, lastSpawnParent, lastSpawnChild, keysOfStr(execs))
+}
+
+func keysOfStr(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 func keysOf(m map[string]bool) []string {

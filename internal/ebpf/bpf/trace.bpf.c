@@ -16,6 +16,7 @@
 #include <bpf/bpf_core_read.h>
 
 #define EVENT_SPAWN 1
+#define EVENT_EXEC 2
 
 struct event {
 	__u32 kind;
@@ -101,6 +102,29 @@ int handle_fork(struct bpf_raw_tracepoint_args *ctx)
 			bpf_ringbuf_submit(e, 0);
 		}
 	}
+	return 0;
+}
+
+SEC("raw_tracepoint/sched_process_exec")
+int handle_exec(struct bpf_raw_tracepoint_args *ctx)
+{
+	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
+	if (!bpf_map_lookup_elem(&tracked, &tgid))
+		return 0;
+
+	// args: (task_struct *p, pid_t old_pid, struct linux_binprm *bprm).
+	struct linux_binprm *bprm = (struct linux_binprm *)ctx->args[2];
+	const char *filename = BPF_CORE_READ(bprm, filename);
+
+	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e)
+		return 0;
+	e->kind = EVENT_EXEC;
+	e->pid = tgid;
+	e->ppid = 0;
+	e->path[0] = 0;
+	bpf_probe_read_kernel_str(e->path, sizeof(e->path), filename);
+	bpf_ringbuf_submit(e, 0);
 	return 0;
 }
 
