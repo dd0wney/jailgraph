@@ -195,6 +195,26 @@ are validated by unit tests and end-to-end runs against a real graphdb. Both
 Linux backends are validated at runtime on linux/arm64 (Docker): the seccomp
 trace and the eBPF tree test (descendants + SPAWN + EXEC + OPEN + full syscalls).
 
+## stór reproducibility convergence
+
+jailgraph composes with [stór](https://github.com/dd0wney/stor-core) (a Nix-style
+reproducible build tool) to turn drift detection into a **build-reproducibility
+check**. Because the eBPF backend tracks the root-namespace process tree, it
+follows a build's subprocesses *through stór's namespace sandbox*
+(`unshare(CLONE_NEW*)` + `pivot_root`):
+
+```sh
+# Trace two builds of the same derivation, then audit for drift.
+jailgraph learn --collector ebpf -- stor realise examples/hello.star   # run A
+jailgraph learn --collector ebpf -- stor realise examples/hello.star   # run B
+jailgraph audit --baseline <runA> --against <runB> --mode reproducibility
+```
+
+A deterministic build produces no stable-dimension (syscall/binary) drift; drift
+there is an impurity signal. Validated end-to-end: `make stor-convergence`
+(needs Docker + sibling repos `../stor-core` and `../graphdb`) traces a real stór
+sandboxed build twice and confirms the reproducibility audit clears it.
+
 ## License
 
 Apache-2.0 (see `LICENSE` and `NOTICE`), with one exception required by the

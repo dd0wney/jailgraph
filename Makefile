@@ -46,5 +46,11 @@ ebpf-test:
 	docker run --rm --privileged --pid=host -v "$$PWD":/src -w /src golang:1.26 \
 	  go test ./internal/ebpf/ ./internal/seccomp/ -tags linux_integration -count=1
 
+# Validate the jailgraph x stor reproducibility convergence (needs sibling repos
+# ../stor-core and ../graphdb). Traces a stor sandboxed build twice and confirms
+# the reproducibility audit reports no stable-dimension drift.
+stor-convergence:
+	./scripts/stor-convergence.sh
+
 clean:
 	go clean ./...
