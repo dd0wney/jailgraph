@@ -55,7 +55,33 @@ jailgraph learn --replay testdata/events.json --api-key "$KEY"
 
 # Generate sandbox profiles from a learned run (prints the run id on completion).
 jailgraph profile --run <run-id> --format both --out ./myapp
+
+# Audit a candidate run for drift against a trusted (unioned) baseline.
+# Exit codes: 0 = no drift, 1 = drift detected, 2 = could not audit.
+jailgraph audit --baseline <run1>,<run2> --against <run3> --mode security
 ```
+
+### Drift audit (`jailgraph audit`)
+
+Compares a candidate run against a baseline (union of one or more trusted runs —
+more runs = fewer false positives) and reports drift, **dimension-aware** because
+the dimensions are not equally trustworthy:
+
+- **Syscalls** (the rare watched set) — high signal; drives the verdict. A run
+  suddenly calling `setns`/`execve` it never did is a real anomaly.
+- **Binaries** exec'd — medium signal; drives the verdict.
+- **Files** — *low confidence*. Programs open volatile paths (`/tmp/XXXX`,
+  `/proc/<pid>/…`) every run, so paths are normalized (volatile prefixes
+  bucketed, digit runs collapsed) and reported **separately, never driving the
+  verdict**.
+
+Two modes: **security** flags additive drift (candidate did something new — the
+anomaly signal); **reproducibility** flags any symmetric stable-dimension drift
+between runs of the same derivation. Note: reproducibility mode is impurity-
+*signal* detection, **not** trace-equality — reproducible builds guarantee
+deterministic output, not deterministic traces. Strong impurity signals like
+network access or undeclared-input reads need the (later) eBPF backend. Lossy
+runs are refused unless `--force`.
 
 ### Profile strength (read this before trusting a generated profile)
 

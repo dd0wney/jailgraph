@@ -13,15 +13,18 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/dd0wney/jailgraph/internal/aggregate"
+	"github.com/dd0wney/jailgraph/internal/audit"
 	"github.com/dd0wney/jailgraph/internal/buffer"
 	"github.com/dd0wney/jailgraph/internal/collector"
 	"github.com/dd0wney/jailgraph/internal/graphdb"
@@ -51,20 +54,118 @@ func main() {
 		err = runLearn(os.Args[2:])
 	case "profile":
 		err = runProfile(os.Args[2:])
+	case "audit":
+		err = runAudit(os.Args[2:])
 	default:
 		usage()
 	}
 	if err != nil {
+		// exitErr carries an explicit code (audit distinguishes drift-found
+		// from couldn't-audit); everything else is a generic failure.
+		var ee *exitErr
+		if errors.As(err, &ee) {
+			if ee.msg != "" {
+				fmt.Fprintln(os.Stderr, "jailgraph:", ee.msg)
+			}
+			os.Exit(ee.code)
+		}
 		fmt.Fprintln(os.Stderr, "jailgraph:", err)
 		os.Exit(1)
 	}
 }
 
+// exitErr lets a subcommand request a specific process exit code.
+type exitErr struct {
+	code int
+	msg  string
+}
+
+func (e *exitErr) Error() string { return e.msg }
+
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  jailgraph learn [flags] -- <target> [args...]")
 	fmt.Fprintln(os.Stderr, "  jailgraph profile --run <id> [--format firejail|seccomp|both] [--out <path>] [--force]")
+	fmt.Fprintln(os.Stderr, "  jailgraph audit --baseline <id[,id...]> --against <id> [--mode security|reproducibility] [--json] [--force]")
 	os.Exit(2)
+}
+
+// runAudit compares a candidate run against a trusted (unioned) baseline and
+// reports drift. Exit codes: 0 = no drift, 1 = drift detected, 2 = could not
+// audit (missing run, lossy without --force, or setup error).
+func runAudit(argv []string) error {
+	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
+	var (
+		graphURL = fs.String("graphdb-url", envOr("JAILGRAPH_GRAPHDB_URL", "http://localhost:8080"), "graphdb base URL")
+		apiKey   = fs.String("api-key", os.Getenv("JAILGRAPH_API_KEY"), "graphdb API key (X-API-Key)")
+		baseCSV  = fs.String("baseline", "", "comma-separated trusted baseline run id(s); unioned (required)")
+		against  = fs.String("against", "", "candidate run id to audit (required)")
+		modeStr  = fs.String("mode", "security", "security | reproducibility")
+		jsonOut  = fs.Bool("json", false, "emit the report as JSON")
+		force    = fs.Bool("force", false, "audit even if a run was lossy")
+	)
+	if err := fs.Parse(argv); err != nil {
+		return err
+	}
+	if *baseCSV == "" || *against == "" {
+		return &exitErr{2, "--baseline and --against are required"}
+	}
+	mode := audit.Mode(*modeStr)
+	if mode != audit.ModeSecurity && mode != audit.ModeReproducibility {
+		return &exitErr{2, fmt.Sprintf("unknown --mode %q (want security|reproducibility)", *modeStr)}
+	}
+
+	client := graphdb.New(graphdb.Config{BaseURL: *graphURL, APIKey: *apiKey})
+	ctx := context.Background()
+
+	collect := func(id string) (profile.Behavior, error) {
+		b, err := profile.Collect(ctx, client, id, 500)
+		if err != nil {
+			return b, &exitErr{2, err.Error()}
+		}
+		if b.Lossy && !*force {
+			return b, &exitErr{2, fmt.Sprintf("run %s was lossy; audit is unreliable. Re-run with --force to override", id)}
+		}
+		return b, nil
+	}
+
+	var bases []profile.Behavior
+	var baseIDs []string
+	for _, id := range strings.Split(*baseCSV, ",") {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		b, err := collect(id)
+		if err != nil {
+			return err
+		}
+		bases = append(bases, b)
+		baseIDs = append(baseIDs, id)
+	}
+	cand, err := collect(*against)
+	if err != nil {
+		return err
+	}
+
+	report := audit.Diff(audit.Union(bases...), cand)
+	report.BaselineRuns = baseIDs
+	report.CandidateRun = *against
+
+	if *jsonOut {
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+	} else {
+		fmt.Print(report.RenderText(mode))
+	}
+
+	if report.DriftDetected(mode) {
+		return &exitErr{1, ""} // report already printed
+	}
+	return nil
 }
 
 func runLearn(argv []string) error {
