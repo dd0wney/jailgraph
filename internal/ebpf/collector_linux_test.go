@@ -113,7 +113,10 @@ func keysOf(m map[string]bool) []string {
 // syscalls. If any syscall is still number-only, the renderer must refuse to
 // enforce (catching the footgun) rather than silently deny it.
 func TestEBPF_EnforceProfileFromRealTrace(t *testing.T) {
-	coll, err := NewCollector("/bin/cat", []string{"/etc/hostname"}, Config{})
+	// Trace a richer program tree (sh + ls touches dozens of distinct syscalls)
+	// to exercise the COMPLETE nr→name table: with it, enforce must succeed (no
+	// sys_<nr> forcing a refusal).
+	coll, err := NewCollector("/bin/sh", []string{"-c", "ls -la / >/dev/null 2>&1"}, Config{})
 	if err != nil {
 		t.Fatalf("NewCollector: %v", err)
 	}
@@ -129,7 +132,7 @@ func TestEBPF_EnforceProfileFromRealTrace(t *testing.T) {
 		}
 	}()
 
-	b := profile.Behavior{RunID: "ebpf-cat", FullCoverage: true, Syscalls: map[string]bool{}}
+	b := profile.Behavior{RunID: "ebpf-tree", FullCoverage: true, Syscalls: map[string]bool{}}
 	for e := range events {
 		if e.Kind == collector.EventSyscall {
 			b.Syscalls[e.SyscallName] = true
@@ -137,14 +140,20 @@ func TestEBPF_EnforceProfileFromRealTrace(t *testing.T) {
 	}
 	_ = coll.Wait()
 
+	// With the complete table, no observed syscall should be number-only.
+	var unnamed []string
+	for sc := range b.Syscalls {
+		if strings.HasPrefix(sc, "sys_") {
+			unnamed = append(unnamed, sc)
+		}
+	}
+	if len(unnamed) > 0 {
+		t.Errorf("complete table should name every observed syscall; unnamed: %v", unnamed)
+	}
+
 	data, err := profile.RenderSeccompOCI(b, profile.SeccompOptions{Enforce: true})
 	if err != nil {
-		// Acceptable ONLY if it's the safe refusal for unnamed syscalls.
-		if strings.Contains(err.Error(), "recorded by number only") {
-			t.Logf("enforce safely refused (expand nr→name table to enable): %v", err)
-			return
-		}
-		t.Fatalf("unexpected enforce error: %v", err)
+		t.Fatalf("enforce should succeed with the complete table, got: %v", err)
 	}
 	// Enforcing profile must be default-deny and permit the observed hot path.
 	if !strings.Contains(string(data), "SCMP_ACT_ERRNO") {

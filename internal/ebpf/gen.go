@@ -7,3 +7,4 @@ package ebpf
 // pinned toolchain via the multi-stage build: `make bpf-generate`.
 //
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target bpfel -no-strip trace ./bpf/trace.bpf.c
+//go:generate go run mksysname.go
