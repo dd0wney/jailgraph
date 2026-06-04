@@ -13,10 +13,11 @@
 //     take a permissive baseline and DENY the dangerous syscalls the program
 //     demonstrably never used ("baseline minus unobserved-dangerous"). A tight
 //     allowlist needs the eBPF backend's full coverage (a later increment).
-//   - Capability/namespace policy is NOT emitted from observation: increment 1
-//     does not yet decode capset/setns into Capability/Namespace nodes. firejail
-//     output uses a conservative `caps.drop all` DEFAULT, clearly labeled as a
-//     default rather than evidence.
+//   - Capability policy is evidence-based on full-coverage (eBPF) runs: firejail
+//     emits `caps.keep <observed>` from capabilities the program's actions
+//     required (cap_capable), or `caps.drop all` labeled as evidence ("needs
+//     none") vs conservative default (partial coverage) accordingly. Observed
+//     namespace types (unshare) are surfaced informationally.
 package profile
 
 import (
@@ -40,15 +41,16 @@ var GateableSyscalls = []string{
 }
 
 // Behavior is the observed surface of one run, reduced to what the profiles
-// need. Caps/Namespaces are intentionally absent (not yet decoded).
+// need. Caps/Namespaces are populated only by full-coverage (eBPF) runs.
 type Behavior struct {
-	RunID    string
-	Target   string
-	Syscalls map[string]bool // observed syscall names
-	Files    []string        // observed opened paths
-	Binaries []string        // observed exec'd binary paths
-	Caps     []string        // capabilities the program's actions required (eBPF only)
-	Lossy    bool            // the trace dropped events; profile is unsafe
+	RunID      string
+	Target     string
+	Syscalls   map[string]bool // observed syscall names
+	Files      []string        // observed opened paths
+	Binaries   []string        // observed exec'd binary paths
+	Caps       []string        // capabilities the program's actions required (eBPF only)
+	Namespaces []string        // namespace types the program created (eBPF only)
+	Lossy      bool            // the trace dropped events; profile is unsafe
 	// FullCoverage is true only when the collector observed the COMPLETE syscall
 	// set (eBPF). It gates default-deny (least-privilege) seccomp generation: a
 	// default-deny profile from partial coverage would deny syscalls the program
@@ -239,6 +241,14 @@ func RenderFirejail(b Behavior) string {
 		// cap_capable) — drop all as a conservative default.
 		w("# conservative default: partial coverage cannot observe capability use.")
 		w("caps.drop all")
+	}
+	w("")
+
+	if len(b.Namespaces) > 0 {
+		w("")
+		w("# --- namespaces the program created (observed; informational) ---")
+		w("# %s — if 'net' appears the program manages its own networking;", strings.Join(b.Namespaces, ", "))
+		w("# review the net/no-net defaults below accordingly.")
 	}
 	w("")
 

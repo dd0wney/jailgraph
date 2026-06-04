@@ -19,11 +19,26 @@
 #define EVENT_SPAWN 1
 #define EVENT_EXEC 2
 #define EVENT_OPEN 3
+#define EVENT_NS 4
+
+// Namespace-creation flags (CLONE_NEW*), not present in vmlinux.h (they are
+// uapi #defines, not BTF types).
+#define CLONE_NEWTIME 0x00000080
+#define CLONE_NEWNS 0x00020000
+#define CLONE_NEWCGROUP 0x02000000
+#define CLONE_NEWUTS 0x04000000
+#define CLONE_NEWIPC 0x08000000
+#define CLONE_NEWUSER 0x10000000
+#define CLONE_NEWPID 0x20000000
+#define CLONE_NEWNET 0x40000000
+#define CLONE_NEW_ALL (CLONE_NEWTIME | CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | \
+		       CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET)
 
 struct event {
 	__u32 kind;
-	__u32 pid;  // subject (child for SPAWN)
-	__u32 ppid; // parent
+	__u32 pid;   // subject (child for SPAWN)
+	__u32 ppid;  // parent
+	__u32 flags; // NS: the CLONE_NEW* bits unshared; unused otherwise
 	char path[256];
 };
 
@@ -110,6 +125,7 @@ int handle_fork(struct bpf_raw_tracepoint_args *ctx)
 			e->kind = EVENT_SPAWN;
 			e->pid = ctgid;
 			e->ppid = ptgid;
+			e->flags = 0;
 			e->path[0] = 0;
 			bpf_ringbuf_submit(e, 0);
 		}
@@ -134,6 +150,7 @@ int handle_exec(struct bpf_raw_tracepoint_args *ctx)
 	e->kind = EVENT_EXEC;
 	e->pid = tgid;
 	e->ppid = 0;
+	e->flags = 0;
 	e->path[0] = 0;
 	bpf_probe_read_kernel_str(e->path, sizeof(e->path), filename);
 	bpf_ringbuf_submit(e, 0);
@@ -158,6 +175,7 @@ int BPF_PROG(handle_open, struct file *file)
 	e->kind = EVENT_OPEN;
 	e->pid = tgid;
 	e->ppid = 0;
+	e->flags = 0;
 	e->path[0] = 0;
 	bpf_d_path(&file->f_path, e->path, sizeof(e->path));
 	bpf_ringbuf_submit(e, 0);
@@ -179,6 +197,33 @@ int BPF_PROG(handle_cap, const struct cred *cred, struct user_namespace *ns, int
 	__u64 key = ((__u64)tgid << 32) | (__u32)cap;
 	__u8 one = 1;
 	bpf_map_update_elem(&seen_caps, &key, &one, BPF_ANY);
+	return 0;
+}
+
+// handle_unshare records which namespace types a tracked process creates via
+// unshare(2). The flags carry the CLONE_NEW* bits; userspace expands them into
+// one JOINED_NS edge per type. (setns/clone-with-CLONE_NEW are deferred — most
+// programs that create namespaces use unshare.) Semantics: "used a namespace of
+// type X", not "joined instance Y" (we record no namespace inode).
+SEC("fentry/ksys_unshare")
+int BPF_PROG(handle_unshare, unsigned long unshare_flags)
+{
+	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
+	if (!bpf_map_lookup_elem(&tracked, &tgid))
+		return 0;
+	__u32 nsbits = (__u32)unshare_flags & CLONE_NEW_ALL;
+	if (!nsbits)
+		return 0;
+
+	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e)
+		return 0;
+	e->kind = EVENT_NS;
+	e->pid = tgid;
+	e->ppid = 0;
+	e->flags = nsbits;
+	e->path[0] = 0;
+	bpf_ringbuf_submit(e, 0);
 	return 0;
 }
 

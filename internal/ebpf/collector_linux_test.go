@@ -112,20 +112,27 @@ func TestEBPF_CapabilityDecode(t *testing.T) {
 	}()
 
 	caps := map[string]bool{}
+	ns := map[string]bool{}
 	for e := range events {
-		if e.Kind == collector.EventCap {
+		switch e.Kind {
+		case collector.EventCap:
 			caps[e.CapName] = true
+		case collector.EventJoinNS:
+			ns[e.NSType] = true
 		}
 	}
 	_ = coll.Wait()
 
-	if len(caps) == 0 {
-		t.Fatal("expected capability checks to be observed")
-	}
 	if !caps["CAP_SYS_ADMIN"] {
-		t.Errorf("expected CAP_SYS_ADMIN from unshare -Urn; observed %v", keysOfStr(caps))
+		t.Errorf("expected CAP_SYS_ADMIN from unshare -Urn; observed caps %v", keysOfStr(caps))
 	}
-	t.Logf("capabilities observed: %v", keysOfStr(caps))
+	// unshare -Urn creates user + net namespaces.
+	for _, want := range []string{"user", "net"} {
+		if !ns[want] {
+			t.Errorf("expected %q namespace from unshare -Urn; observed ns %v", want, keysOfStr(ns))
+		}
+	}
+	t.Logf("capabilities: %v; namespaces: %v", keysOfStr(caps), keysOfStr(ns))
 }
 
 func keysOfStr(m map[string]bool) []string {

@@ -59,6 +59,7 @@ type traceProgramSpecs struct {
 	HandleFork     *ebpf.ProgramSpec `ebpf:"handle_fork"`
 	HandleOpen     *ebpf.ProgramSpec `ebpf:"handle_open"`
 	HandleSysEnter *ebpf.ProgramSpec `ebpf:"handle_sys_enter"`
+	HandleUnshare  *ebpf.ProgramSpec `ebpf:"handle_unshare"`
 }
 
 // traceMapSpecs contains maps before they are loaded into the kernel.
@@ -130,6 +131,7 @@ type tracePrograms struct {
 	HandleFork     *ebpf.Program `ebpf:"handle_fork"`
 	HandleOpen     *ebpf.Program `ebpf:"handle_open"`
 	HandleSysEnter *ebpf.Program `ebpf:"handle_sys_enter"`
+	HandleUnshare  *ebpf.Program `ebpf:"handle_unshare"`
 }
 
 func (p *tracePrograms) Close() error {
@@ -139,6 +141,7 @@ func (p *tracePrograms) Close() error {
 		p.HandleFork,
 		p.HandleOpen,
 		p.HandleSysEnter,
+		p.HandleUnshare,
 	)
 }
 

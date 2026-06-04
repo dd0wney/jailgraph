@@ -38,14 +38,26 @@ const (
 	evSpawn uint32 = 1
 	evExec  uint32 = 2
 	evOpen  uint32 = 3
+	evNS    uint32 = 4
 )
 
 // rawEvent mirrors `struct event` in trace.bpf.c (all fields 4-byte aligned).
 type rawEvent struct {
-	Kind uint32
-	Pid  uint32
-	Ppid uint32
-	Path [256]byte
+	Kind  uint32
+	Pid   uint32
+	Ppid  uint32
+	Flags uint32 // NS: the CLONE_NEW* bits unshared
+	Path  [256]byte
+}
+
+// nsBits maps CLONE_NEW* flags to namespace type names (matching trace.bpf.c).
+var nsBits = []struct {
+	bit  uint32
+	name string
+}{
+	{0x00020000, "mnt"}, {0x04000000, "uts"}, {0x08000000, "ipc"},
+	{0x10000000, "user"}, {0x20000000, "pid"}, {0x40000000, "net"},
+	{0x02000000, "cgroup"}, {0x00000080, "time"},
 }
 
 // drainGrace is how long we let the ringbuf flush in-flight events after the
@@ -126,6 +138,13 @@ func (c *ebpfCollector) Start(ctx context.Context) (<-chan collector.BehaviorEve
 		return nil, fmt.Errorf("attach cap_capable: %w", err)
 	}
 	c.links = append(c.links, capLink)
+	// fentry on ksys_unshare: records namespace types the subtree creates.
+	unshareLink, err := link.AttachTracing(link.TracingOptions{Program: c.objs.HandleUnshare})
+	if err != nil {
+		c.cleanup()
+		return nil, fmt.Errorf("attach ksys_unshare: %w", err)
+	}
+	c.links = append(c.links, unshareLink)
 
 	rd, err := ringbuf.NewReader(c.objs.Events)
 	if err != nil {
@@ -182,23 +201,41 @@ func (c *ebpfCollector) readRingbuf() {
 			c.emitErr(fmt.Errorf("decode event: %w", err))
 			continue
 		}
-		c.emit(c.toBehavior(ev))
+		for _, be := range c.toBehaviors(ev) {
+			c.emit(be)
+		}
 	}
 }
 
-func (c *ebpfCollector) toBehavior(ev rawEvent) collector.BehaviorEvent {
-	be := collector.BehaviorEvent{PID: int32(ev.Pid), PPID: int32(ev.Ppid), Timestamp: time.Now()}
+// toBehaviors decodes a raw event into one or more BehaviorEvents. NS events fan
+// out to one JOINED_NS per CLONE_NEW* bit set.
+func (c *ebpfCollector) toBehaviors(ev rawEvent) []collector.BehaviorEvent {
+	base := collector.BehaviorEvent{PID: int32(ev.Pid), PPID: int32(ev.Ppid), Timestamp: time.Now()}
 	switch ev.Kind {
 	case evSpawn:
-		be.Kind = collector.EventSpawn
+		base.Kind = collector.EventSpawn
+		return []collector.BehaviorEvent{base}
 	case evExec:
-		be.Kind = collector.EventExec
-		be.Exe = cstr(ev.Path[:])
+		base.Kind = collector.EventExec
+		base.Exe = cstr(ev.Path[:])
+		return []collector.BehaviorEvent{base}
 	case evOpen:
-		be.Kind = collector.EventOpen
-		be.Path = cstr(ev.Path[:])
+		base.Kind = collector.EventOpen
+		base.Path = cstr(ev.Path[:])
+		return []collector.BehaviorEvent{base}
+	case evNS:
+		var out []collector.BehaviorEvent
+		for _, b := range nsBits {
+			if ev.Flags&b.bit != 0 {
+				e := base
+				e.Kind = collector.EventJoinNS
+				e.NSType = b.name
+				out = append(out, e)
+			}
+		}
+		return out
 	}
-	return be
+	return nil
 }
 
 // cstr converts a NUL-terminated C char array to a Go string.
