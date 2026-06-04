@@ -27,6 +27,7 @@ import (
 	"github.com/dd0wney/jailgraph/internal/audit"
 	"github.com/dd0wney/jailgraph/internal/buffer"
 	"github.com/dd0wney/jailgraph/internal/collector"
+	"github.com/dd0wney/jailgraph/internal/ebpf"
 	"github.com/dd0wney/jailgraph/internal/graphdb"
 	"github.com/dd0wney/jailgraph/internal/ingest"
 	"github.com/dd0wney/jailgraph/internal/profile"
@@ -171,11 +172,12 @@ func runAudit(argv []string) error {
 func runLearn(argv []string) error {
 	fs := flag.NewFlagSet("learn", flag.ContinueOnError)
 	var (
-		graphURL  = fs.String("graphdb-url", envOr("JAILGRAPH_GRAPHDB_URL", "http://localhost:8080"), "graphdb base URL")
-		apiKey    = fs.String("api-key", os.Getenv("JAILGRAPH_API_KEY"), "graphdb API key (X-API-Key)")
-		bufSize   = fs.Int("buffer", 8192, "capture ring-buffer capacity")
-		batchSize = fs.Int("batch", ingest.DefaultBatchSize, "graphdb batch size (max 1000)")
-		replay    = fs.String("replay", "", "replay recorded BehaviorEvents from a JSON file instead of tracing")
+		graphURL   = fs.String("graphdb-url", envOr("JAILGRAPH_GRAPHDB_URL", "http://localhost:8080"), "graphdb base URL")
+		apiKey     = fs.String("api-key", os.Getenv("JAILGRAPH_API_KEY"), "graphdb API key (X-API-Key)")
+		bufSize    = fs.Int("buffer", 8192, "capture ring-buffer capacity")
+		batchSize  = fs.Int("batch", ingest.DefaultBatchSize, "graphdb batch size (max 1000)")
+		replay     = fs.String("replay", "", "replay recorded BehaviorEvents from a JSON file instead of tracing")
+		collectorK = fs.String("collector", "seccomp", "capture backend: seccomp | ebpf (Linux only)")
 	)
 	// Split flags from the target command at "--".
 	flagArgs, target, targetArgs := splitArgs(argv)
@@ -191,7 +193,7 @@ func runLearn(argv []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	coll, label, err := buildCollector(*replay, target, targetArgs)
+	coll, label, err := buildCollector(*replay, *collectorK, target, targetArgs)
 	if err != nil {
 		return err
 	}
@@ -339,9 +341,9 @@ func emit(out, suffix string, data []byte) error {
 	return nil
 }
 
-// buildCollector returns the seccomp supervisor for a live trace, or a
-// FakeCollector replaying a fixture. The label names the run's target.
-func buildCollector(replay, target string, targetArgs []string) (collector.Collector, string, error) {
+// buildCollector returns the chosen live-trace backend, or a FakeCollector
+// replaying a fixture. The label names the run's target.
+func buildCollector(replay, kind, target string, targetArgs []string) (collector.Collector, string, error) {
 	if replay != "" {
 		events, err := loadFixture(replay)
 		if err != nil {
@@ -349,11 +351,16 @@ func buildCollector(replay, target string, targetArgs []string) (collector.Colle
 		}
 		return collector.NewFake(events), "replay:" + replay, nil
 	}
-	coll, err := seccomp.NewSupervisor(target, targetArgs, seccomp.Config{})
-	if err != nil {
-		return nil, "", err
+	switch kind {
+	case "seccomp":
+		coll, err := seccomp.NewSupervisor(target, targetArgs, seccomp.Config{})
+		return coll, target, err
+	case "ebpf":
+		coll, err := ebpf.NewCollector(target, targetArgs, ebpf.Config{})
+		return coll, target, err
+	default:
+		return nil, "", fmt.Errorf("unknown --collector %q (want seccomp|ebpf)", kind)
 	}
-	return coll, target, nil
 }
 
 func loadFixture(path string) ([]collector.BehaviorEvent, error) {
