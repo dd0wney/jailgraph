@@ -90,6 +90,44 @@ func TestEBPF_TreeCoverageAndSpawn(t *testing.T) {
 	t.Logf("eBPF tree: %d syscalls, %d spawns, execs %v, opened %d files", len(seen), spawns, keysOfStr(execs), len(opens))
 }
 
+// TestEBPF_CapabilityDecode checks evidence-based capability capture. Asserting
+// a SPECIFIC cap (not a non-empty count, which is vacuous as root) from a target
+// that requires it: `unshare -Urn` creates user+net namespaces, and netns setup
+// is checked against CAP_SYS_ADMIN.
+func TestEBPF_CapabilityDecode(t *testing.T) {
+	coll, err := NewCollector("/bin/sh", []string{"-c", "unshare -Urn true"}, Config{})
+	if err != nil {
+		t.Fatalf("NewCollector: %v", err)
+	}
+	defer coll.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	events, err := coll.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	go func() {
+		for range coll.Errors() {
+		}
+	}()
+
+	caps := map[string]bool{}
+	for e := range events {
+		if e.Kind == collector.EventCap {
+			caps[e.CapName] = true
+		}
+	}
+	_ = coll.Wait()
+
+	if len(caps) == 0 {
+		t.Fatal("expected capability checks to be observed")
+	}
+	if !caps["CAP_SYS_ADMIN"] {
+		t.Errorf("expected CAP_SYS_ADMIN from unshare -Urn; observed %v", keysOfStr(caps))
+	}
+	t.Logf("capabilities observed: %v", keysOfStr(caps))
+}
+
 func keysOfStr(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

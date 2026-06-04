@@ -54,6 +54,7 @@ type traceSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type traceProgramSpecs struct {
+	HandleCap      *ebpf.ProgramSpec `ebpf:"handle_cap"`
 	HandleExec     *ebpf.ProgramSpec `ebpf:"handle_exec"`
 	HandleFork     *ebpf.ProgramSpec `ebpf:"handle_fork"`
 	HandleOpen     *ebpf.ProgramSpec `ebpf:"handle_open"`
@@ -67,6 +68,7 @@ type traceMapSpecs struct {
 	Events   *ebpf.MapSpec `ebpf:"events"`
 	Launcher *ebpf.MapSpec `ebpf:"launcher"`
 	Seen     *ebpf.MapSpec `ebpf:"seen"`
+	SeenCaps *ebpf.MapSpec `ebpf:"seen_caps"`
 	Tracked  *ebpf.MapSpec `ebpf:"tracked"`
 }
 
@@ -99,6 +101,7 @@ type traceMaps struct {
 	Events   *ebpf.Map `ebpf:"events"`
 	Launcher *ebpf.Map `ebpf:"launcher"`
 	Seen     *ebpf.Map `ebpf:"seen"`
+	SeenCaps *ebpf.Map `ebpf:"seen_caps"`
 	Tracked  *ebpf.Map `ebpf:"tracked"`
 }
 
@@ -107,6 +110,7 @@ func (m *traceMaps) Close() error {
 		m.Events,
 		m.Launcher,
 		m.Seen,
+		m.SeenCaps,
 		m.Tracked,
 	)
 }
@@ -121,6 +125,7 @@ type traceVariables struct {
 //
 // It can be passed to loadTraceObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tracePrograms struct {
+	HandleCap      *ebpf.Program `ebpf:"handle_cap"`
 	HandleExec     *ebpf.Program `ebpf:"handle_exec"`
 	HandleFork     *ebpf.Program `ebpf:"handle_fork"`
 	HandleOpen     *ebpf.Program `ebpf:"handle_open"`
@@ -129,6 +134,7 @@ type tracePrograms struct {
 
 func (p *tracePrograms) Close() error {
 	return _TraceClose(
+		p.HandleCap,
 		p.HandleExec,
 		p.HandleFork,
 		p.HandleOpen,

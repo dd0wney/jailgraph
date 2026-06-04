@@ -51,6 +51,16 @@ struct {
 	__type(value, __u8);
 } seen SEC(".maps");
 
+// seen_caps: which (tgid, capability) checks occurred — read out at teardown.
+// cap_capable fires on every permission check (high frequency), so we dedup in
+// a map rather than streaming each check.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u64);
+	__type(value, __u8);
+} seen_caps SEC(".maps");
+
 // events: streams SPAWN/EXEC/OPEN records to userspace.
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -151,6 +161,24 @@ int BPF_PROG(handle_open, struct file *file)
 	e->path[0] = 0;
 	bpf_d_path(&file->f_path, e->path, sizeof(e->path));
 	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+// handle_cap records which capabilities a tracked process is checked against
+// (cap_capable is in commoncap, always in the LSM stack, so it fires regardless
+// of which LSMs are active). This is "capabilities the program's actions
+// required" — the evidence for a least-privilege caps.keep policy.
+// Signature: cap_capable(const struct cred *cred, struct user_namespace *ns,
+//                        int cap, unsigned int opts).
+SEC("fentry/cap_capable")
+int BPF_PROG(handle_cap, const struct cred *cred, struct user_namespace *ns, int cap)
+{
+	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
+	if (!bpf_map_lookup_elem(&tracked, &tgid))
+		return 0;
+	__u64 key = ((__u64)tgid << 32) | (__u32)cap;
+	__u8 one = 1;
+	bpf_map_update_elem(&seen_caps, &key, &one, BPF_ANY);
 	return 0;
 }
 

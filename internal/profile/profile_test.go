@@ -184,6 +184,34 @@ func TestRenderFirejail_WhitelistsObservedDirsAndDropsUnused(t *testing.T) {
 	}
 }
 
+func TestRenderFirejail_CapsByCoverage(t *testing.T) {
+	// Observed caps → evidence-based caps.keep (firejail lowercase, no CAP_).
+	withCaps := sampleBehavior()
+	withCaps.FullCoverage = true
+	withCaps.Caps = []string{"CAP_SYS_ADMIN", "CAP_NET_RAW"}
+	out := RenderFirejail(withCaps)
+	if !strings.Contains(out, "caps.keep sys_admin,net_raw") {
+		t.Errorf("expected evidence-based caps.keep; got:\n%s", out)
+	}
+	if strings.Contains(out, "caps.drop all") {
+		t.Error("should not drop-all when caps were observed")
+	}
+
+	// Full coverage, no caps → evidence-based "needs none".
+	fullNone := sampleBehavior()
+	fullNone.FullCoverage = true
+	out = RenderFirejail(fullNone)
+	if !strings.Contains(out, "caps.drop all") || !strings.Contains(out, "evidence-based: full coverage observed no capability") {
+		t.Errorf("expected evidence-based drop-all; got:\n%s", out)
+	}
+
+	// Partial coverage → conservative default drop-all.
+	out = RenderFirejail(sampleBehavior()) // FullCoverage=false
+	if !strings.Contains(out, "caps.drop all") || !strings.Contains(out, "conservative default") {
+		t.Errorf("expected conservative drop-all; got:\n%s", out)
+	}
+}
+
 func TestRenderFirejail_LossyWarning(t *testing.T) {
 	b := sampleBehavior()
 	b.Lossy = true

@@ -34,6 +34,7 @@ func (fakeGraph) Traverse(_ context.Context, startID uint64, _ int) ([]*graphdb.
 			{ID: 20, Labels: []string{model.LabelSyscall}, Properties: map[string]any{"name": "openat"}},
 			{ID: 21, Labels: []string{model.LabelFile}, Properties: map[string]any{"path": "/etc/hostname"}},
 			{ID: 22, Labels: []string{model.LabelBinary}, Properties: map[string]any{"path": "/bin/sh"}},
+			{ID: 23, Labels: []string{model.LabelCapability}, Properties: map[string]any{"name": "CAP_SYS_ADMIN"}},
 		}, nil
 	}
 	// Process 99 belongs to another run and must never be traversed.
@@ -62,6 +63,9 @@ func TestCollect_ScopesToRunAndBucketsByLabel(t *testing.T) {
 	}
 	if len(b.Binaries) != 1 || b.Binaries[0] != "/bin/sh" {
 		t.Errorf("binaries = %v, want [/bin/sh]", b.Binaries)
+	}
+	if len(b.Caps) != 1 || b.Caps[0] != "CAP_SYS_ADMIN" {
+		t.Errorf("caps = %v, want [CAP_SYS_ADMIN]", b.Caps)
 	}
 }
 

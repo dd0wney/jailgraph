@@ -119,6 +119,13 @@ func (c *ebpfCollector) Start(ctx context.Context) (<-chan collector.BehaviorEve
 		return nil, fmt.Errorf("attach security_file_open: %w", err)
 	}
 	c.links = append(c.links, openLink)
+	// fentry on cap_capable: records capabilities the subtree's actions require.
+	capLink, err := link.AttachTracing(link.TracingOptions{Program: c.objs.HandleCap})
+	if err != nil {
+		c.cleanup()
+		return nil, fmt.Errorf("attach cap_capable: %w", err)
+	}
+	c.links = append(c.links, capLink)
 
 	rd, err := ringbuf.NewReader(c.objs.Events)
 	if err != nil {
@@ -233,6 +240,22 @@ func (c *ebpfCollector) finalize(ctx context.Context) {
 	}
 	if err := it.Err(); err != nil {
 		c.emitErr(fmt.Errorf("iterate seen map: %w", err))
+	}
+
+	// Materialize the capabilities the subtree's actions required.
+	var ckey uint64
+	var cval uint8
+	cit := c.objs.SeenCaps.Iterate()
+	for cit.Next(&ckey, &cval) {
+		c.emit(collector.BehaviorEvent{
+			Kind:      collector.EventCap,
+			PID:       int32(ckey >> 32),
+			Timestamp: time.Now(),
+			CapName:   capName(int(uint32(ckey))),
+		})
+	}
+	if err := cit.Err(); err != nil {
+		c.emitErr(fmt.Errorf("iterate seen_caps map: %w", err))
 	}
 }
 

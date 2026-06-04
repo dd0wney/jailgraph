@@ -47,6 +47,7 @@ type Behavior struct {
 	Syscalls map[string]bool // observed syscall names
 	Files    []string        // observed opened paths
 	Binaries []string        // observed exec'd binary paths
+	Caps     []string        // capabilities the program's actions required (eBPF only)
 	Lossy    bool            // the trace dropped events; profile is unsafe
 	// FullCoverage is true only when the collector observed the COMPLETE syscall
 	// set (eBPF). It gates default-deny (least-privilege) seccomp generation: a
@@ -223,14 +224,40 @@ func RenderFirejail(b Behavior) string {
 	}
 	w("")
 
+	w("# --- capabilities ---")
+	switch {
+	case len(b.Caps) > 0:
+		// Evidence-based: keep exactly the caps the program's actions required.
+		w("# evidence-based (observed via cap_capable): keep only what was used.")
+		w("caps.keep %s", strings.Join(firejailCaps(b.Caps), ","))
+	case b.FullCoverage:
+		// Full coverage saw no capability check → the program needs none.
+		w("# evidence-based: full coverage observed no capability use.")
+		w("caps.drop all")
+	default:
+		// Partial coverage can't observe capability use (seccomp can't see
+		// cap_capable) — drop all as a conservative default.
+		w("# conservative default: partial coverage cannot observe capability use.")
+		w("caps.drop all")
+	}
+	w("")
+
 	w("# --- conservative DEFAULTS (not from observation) ---")
-	w("# no capability evidence is collected yet; drop all by default.")
-	w("caps.drop all")
-	w("# no network syscalls are observed yet; assume none. Remove if the program needs net.")
+	w("# network syscalls are not yet observed; assume none. Remove if the program needs net.")
 	w("net none")
 	w("nonewprivs")
 	w("noroot")
 	return sb.String()
+}
+
+// firejailCaps converts CAP_* names to firejail's caps.keep form (lowercase, no
+// CAP_ prefix), e.g. CAP_SYS_ADMIN -> sys_admin.
+func firejailCaps(caps []string) []string {
+	out := make([]string, 0, len(caps))
+	for _, c := range caps {
+		out = append(out, strings.ToLower(strings.TrimPrefix(c, "CAP_")))
+	}
+	return out
 }
 
 // observedDirs reduces opened file paths to their parent directories, sorted and
