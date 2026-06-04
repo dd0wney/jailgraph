@@ -18,18 +18,23 @@ Two interchangeable backends satisfy the same `Collector` interface:
 - **seccomp** (`--collector seccomp`, default) — seccomp user-notify. Watches a
   curated set of rare, security-relevant syscalls (never the hot path), so it is
   light but its syscall view is intentionally partial.
-- **eBPF** (`--collector ebpf`, Linux + `CAP_BPF`) — a `raw_tracepoint/sys_enter`
-  program sees the **full** syscall set, including the read/write/mmap hot path,
-  recording each `(pid, syscall)` once in-kernel. This full coverage is what
-  enables a genuinely tight (default-deny) seccomp profile rather than
-  baseline+gating.
-  - **v1.0 scope/limitations** (honest): it traces the **seeded target PID
-    only** — descendant following via `sched_process_fork` is v1.1, so trace a
-    process that does its own work (or wait for v1.1 for shell pipelines).
-    There is a small **startup race** (a few syscalls before the PID is seeded).
-    The `nr→name` table is partial (common + gateable syscalls named; others
-    `sys_<nr>`). Inside a container, run with `--pid=host` so the BPF
-    root-namespace PID matches (on a real host they always match).
+- **eBPF** (`--collector ebpf`, Linux + `CAP_BPF`) — sees the **full** syscall
+  set, including the read/write/mmap hot path, recording each `(tgid, syscall)`
+  once in-kernel. This full coverage is what enables a genuinely tight
+  (default-deny) seccomp profile rather than baseline+gating. It traces the
+  target's **whole process subtree** and captures:
+  - syscalls (`raw_tracepoint/sys_enter`, full set);
+  - **SPAWN** (`sched_process_fork` — also how descendants join the tracked set,
+    with the real child pid);
+  - **EXEC** (`sched_process_exec`, resolved path via CO-RE `bprm->filename`);
+  - **OPEN** (`fentry/security_file_open` + `bpf_d_path`, fully-resolved paths).
+
+  Seeding is **race-free**: jailgraph records its own tgid before forking, so the
+  target is born a child and tracked at fork time, before its first syscall — no
+  wrapper, no re-exec. Remaining notes: the `nr→name` table is broad but not
+  exhaustive (unmapped numbers → `sys_<nr>`, which makes `--enforce` *refuse*
+  rather than mis-deny); inside a container run with `--pid=host` so the BPF
+  root-namespace tgid matches (on a real host it always matches).
 
 ## How it works
 
@@ -125,8 +130,8 @@ Be precise about what each is:
     coverage. `--enforce` switches to `SCMP_ACT_ERRNO`, and is **refused** if the
     run was lossy or any observed syscall is recorded by number only (which would
     be wrongly denied). Build the baseline from a **union of representative runs**
-    before enforcing — one run misses error/signal paths, and v1.0 eBPF traces
-    only the seeded PID (not children).
+    before enforcing — a single run still misses error/signal/rare-branch paths
+    even though the eBPF backend now traces the whole process subtree.
 - Capability/namespace policy is **not** emitted from observation yet; firejail
   output uses a conservative `caps.drop all` default, labeled as such.
 - A **lossy** run (events were dropped) is refused by default — the profile would
@@ -183,5 +188,4 @@ Increments 1–4 are implemented and tested. The portable pipeline
 (collect→buffer→aggregate→ingest), the profile generator, and the drift auditor
 are validated by unit tests and end-to-end runs against a real graphdb. Both
 Linux backends are validated at runtime on linux/arm64 (Docker): the seccomp
-trace and the eBPF full-syscall-coverage test. The eBPF backend traces the
-seeded target PID only (descendant following is v1.1).
+trace and the eBPF tree test (descendants + SPAWN + EXEC + OPEN + full syscalls).
