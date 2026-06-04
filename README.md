@@ -132,8 +132,13 @@ Be precise about what each is:
     be wrongly denied). Build the baseline from a **union of representative runs**
     before enforcing — a single run still misses error/signal/rare-branch paths
     even though the eBPF backend now traces the whole process subtree.
-- Capability/namespace policy is **not** emitted from observation yet; firejail
-  output uses a conservative `caps.drop all` default, labeled as such.
+- Capability policy is **evidence-based on full-coverage (eBPF) runs**: firejail
+  emits `caps.keep <observed>` from the capabilities the program's actions
+  required (`cap_capable`); with full coverage and none observed it emits
+  `caps.drop all` as the evidence-based "needs none", and on partial coverage
+  (seccomp) `caps.drop all` as a labeled conservative default. Observed namespace
+  types (`unshare`) are surfaced informationally. Every firejail directive is now
+  either evidence-based or an explicitly-labeled conservative default.
 - A **lossy** run (events were dropped) is refused by default — the profile would
   be over-restrictive and break the program. Override with `--force`.
 
