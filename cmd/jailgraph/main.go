@@ -1,0 +1,291 @@
+// Command jailgraph learns a Linux program's sandbox behavior (syscalls, file
+// opens, exec, process tree) and stores it as a graph in graphdb.
+//
+// Usage:
+//
+//	jailgraph learn [flags] -- <target> [args...]
+//	jailgraph learn --replay events.json [flags]   # cross-platform, no tracing
+//
+// The capture path (seccomp user-notify) is Linux-only; --replay feeds recorded
+// events through the same ingest pipeline on any platform.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/dd0wney/jailgraph/internal/aggregate"
+	"github.com/dd0wney/jailgraph/internal/buffer"
+	"github.com/dd0wney/jailgraph/internal/collector"
+	"github.com/dd0wney/jailgraph/internal/graphdb"
+	"github.com/dd0wney/jailgraph/internal/ingest"
+	"github.com/dd0wney/jailgraph/internal/profile"
+	"github.com/dd0wney/jailgraph/internal/run"
+	"github.com/dd0wney/jailgraph/internal/seccomp"
+)
+
+func main() {
+	// If this process is the stage-2 traced child, install the filter and exec
+	// the target — this must run before any other startup logic.
+	if handled, err := seccomp.MaybeRunChild(); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "jailgraph (traced child):", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if len(os.Args) < 2 {
+		usage()
+	}
+	var err error
+	switch os.Args[1] {
+	case "learn":
+		err = runLearn(os.Args[2:])
+	case "profile":
+		err = runProfile(os.Args[2:])
+	default:
+		usage()
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "jailgraph:", err)
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Fprintln(os.Stderr, "usage:")
+	fmt.Fprintln(os.Stderr, "  jailgraph learn [flags] -- <target> [args...]")
+	fmt.Fprintln(os.Stderr, "  jailgraph profile --run <id> [--format firejail|seccomp|both] [--out <path>] [--force]")
+	os.Exit(2)
+}
+
+func runLearn(argv []string) error {
+	fs := flag.NewFlagSet("learn", flag.ContinueOnError)
+	var (
+		graphURL  = fs.String("graphdb-url", envOr("JAILGRAPH_GRAPHDB_URL", "http://localhost:8080"), "graphdb base URL")
+		apiKey    = fs.String("api-key", os.Getenv("JAILGRAPH_API_KEY"), "graphdb API key (X-API-Key)")
+		bufSize   = fs.Int("buffer", 8192, "capture ring-buffer capacity")
+		batchSize = fs.Int("batch", ingest.DefaultBatchSize, "graphdb batch size (max 1000)")
+		replay    = fs.String("replay", "", "replay recorded BehaviorEvents from a JSON file instead of tracing")
+	)
+	// Split flags from the target command at "--".
+	flagArgs, target, targetArgs := splitArgs(argv)
+	if err := fs.Parse(flagArgs); err != nil {
+		return err
+	}
+	if *replay == "" && target == "" {
+		return fmt.Errorf("no target command given (expected: ... -- <target> [args...])")
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	coll, label, err := buildCollector(*replay, target, targetArgs)
+	if err != nil {
+		return err
+	}
+
+	sess := run.New(label, time.Now())
+	builder := aggregate.New(sess.ID)
+	ring := buffer.New(*bufSize)
+
+	events, err := coll.Start(ctx)
+	if err != nil {
+		return fmt.Errorf("start collector: %w", err)
+	}
+	defer func() { _ = coll.Close() }()
+
+	// Pump collector → ring (non-blocking; the ring accounts for any drops).
+	pumpDone := make(chan struct{})
+	go func() {
+		defer close(pumpDone)
+		for e := range events {
+			ring.Push(e)
+		}
+	}()
+	// Surface non-fatal collector errors; never swallow them.
+	go func() {
+		for e := range coll.Errors() {
+			logger.Warn("collector error", "err", e)
+		}
+	}()
+
+	// Consume ring → builder until capture ends and the ring is drained.
+	// sawLossy captures upstream (collector-side) drops propagated via the event.
+	var sawLossy bool
+	drain := func() int {
+		batch := ring.Drain(*batchSize)
+		for _, e := range batch {
+			if e.Lossy {
+				sawLossy = true
+			}
+			builder.Add(e)
+		}
+		return len(batch)
+	}
+consume:
+	for {
+		n := drain()
+		select {
+		case <-pumpDone:
+			for drain() > 0 {
+			}
+			break consume
+		default:
+			if n == 0 {
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}
+	_ = coll.Wait()
+
+	// Finalize the session with lossiness derived from ring drops.
+	sess.EndedAt = time.Now()
+	if ring.TotalDropped() > 0 || sawLossy {
+		sess.Lossy = true
+		for kind, count := range ring.Drops() {
+			sess.Dropped[kind.String()] = count
+		}
+		logger.Warn("trace was lossy; profile derived from it will be incomplete",
+			"ring_dropped", ring.TotalDropped(), "collector_dropped", sawLossy)
+	}
+
+	// Flush to graphdb.
+	client := graphdb.New(graphdb.Config{BaseURL: *graphURL, APIKey: *apiKey})
+	worker := ingest.NewWorker(client, logger, ingest.WithCacheRebuild(true), ingest.WithBatchSize(*batchSize))
+	stats, err := worker.Flush(ctx, sess, builder)
+	if err != nil {
+		return fmt.Errorf("flush to graphdb: %w", err)
+	}
+	logger.Info("learn complete", "run", sess.ID, "lossy", sess.Lossy,
+		"nodes_created", stats.NodesCreated, "edges_created", stats.EdgesCreated)
+	return nil
+}
+
+// runProfile generates sandbox profiles from a previously-learned run.
+func runProfile(argv []string) error {
+	fs := flag.NewFlagSet("profile", flag.ContinueOnError)
+	var (
+		graphURL = fs.String("graphdb-url", envOr("JAILGRAPH_GRAPHDB_URL", "http://localhost:8080"), "graphdb base URL")
+		apiKey   = fs.String("api-key", os.Getenv("JAILGRAPH_API_KEY"), "graphdb API key (X-API-Key)")
+		runID    = fs.String("run", "", "the Run id to generate a profile for (required)")
+		format   = fs.String("format", "firejail", "output format: firejail | seccomp | both")
+		out      = fs.String("out", "", "write to this file/prefix instead of stdout")
+		force    = fs.Bool("force", false, "generate even from a lossy (incomplete) trace")
+	)
+	if err := fs.Parse(argv); err != nil {
+		return err
+	}
+	if *runID == "" {
+		return fmt.Errorf("--run is required")
+	}
+
+	client := graphdb.New(graphdb.Config{BaseURL: *graphURL, APIKey: *apiKey})
+	b, err := profile.Collect(context.Background(), client, *runID, 500)
+	if err != nil {
+		return err
+	}
+	// Lossy guard: an incomplete trace yields an over-restrictive profile that
+	// can break the program. Refuse unless explicitly forced.
+	if b.Lossy && !*force {
+		return fmt.Errorf("run %s was lossy (incomplete trace); profile would be over-restrictive. Re-run with --force to override", *runID)
+	}
+
+	switch *format {
+	case "firejail":
+		return emit(*out, ".profile", []byte(profile.RenderFirejail(b)))
+	case "seccomp":
+		data, err := profile.RenderSeccompOCI(b)
+		if err != nil {
+			return err
+		}
+		return emit(*out, ".seccomp.json", data)
+	case "both":
+		if err := emit(*out, ".profile", []byte(profile.RenderFirejail(b))); err != nil {
+			return err
+		}
+		data, err := profile.RenderSeccompOCI(b)
+		if err != nil {
+			return err
+		}
+		return emit(*out, ".seccomp.json", data)
+	default:
+		return fmt.Errorf("unknown --format %q (want firejail|seccomp|both)", *format)
+	}
+}
+
+// emit writes data to stdout (when out is empty) or to out+suffix.
+func emit(out, suffix string, data []byte) error {
+	if out == "" {
+		_, err := os.Stdout.Write(append(data, '\n'))
+		return err
+	}
+	path := out + suffix
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "wrote", path)
+	return nil
+}
+
+// buildCollector returns the seccomp supervisor for a live trace, or a
+// FakeCollector replaying a fixture. The label names the run's target.
+func buildCollector(replay, target string, targetArgs []string) (collector.Collector, string, error) {
+	if replay != "" {
+		events, err := loadFixture(replay)
+		if err != nil {
+			return nil, "", fmt.Errorf("load replay fixture: %w", err)
+		}
+		return collector.NewFake(events), "replay:" + replay, nil
+	}
+	coll, err := seccomp.NewSupervisor(target, targetArgs, seccomp.Config{})
+	if err != nil {
+		return nil, "", err
+	}
+	return coll, target, nil
+}
+
+func loadFixture(path string) ([]collector.BehaviorEvent, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var events []collector.BehaviorEvent
+	if err := json.Unmarshal(data, &events); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+// splitArgs separates flags (before "--") from the target command (after).
+func splitArgs(argv []string) (flags []string, target string, targetArgs []string) {
+	for i, a := range argv {
+		if a == "--" {
+			flags = argv[:i]
+			rest := argv[i+1:]
+			if len(rest) > 0 {
+				target = rest[0]
+				targetArgs = rest[1:]
+			}
+			return flags, target, targetArgs
+		}
+	}
+	return argv, "", nil
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}

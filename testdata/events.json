@@ -1,0 +1,7 @@
+[
+  {"Kind": 1, "PID": 100, "PPID": 1, "Exe": "/bin/sh", "BinSHA256": "0000sh", "UID": 1000, "SyscallNr": 59, "SyscallName": "execve", "Timestamp": "2026-06-04T00:00:00Z"},
+  {"Kind": 3, "PID": 100, "PPID": 1, "Path": "/etc/hostname", "OpenMode": "r", "SyscallNr": 257, "SyscallName": "openat", "Timestamp": "2026-06-04T00:00:01Z"},
+  {"Kind": 2, "PID": 101, "PPID": 100, "SyscallNr": 56, "SyscallName": "clone", "Timestamp": "2026-06-04T00:00:02Z"},
+  {"Kind": 1, "PID": 101, "PPID": 100, "Exe": "/bin/cat", "BinSHA256": "0000cat", "UID": 1000, "SyscallNr": 59, "SyscallName": "execve", "Timestamp": "2026-06-04T00:00:03Z"},
+  {"Kind": 3, "PID": 101, "PPID": 100, "Path": "/etc/hostname", "OpenMode": "r", "SyscallNr": 257, "SyscallName": "openat", "Timestamp": "2026-06-04T00:00:04Z"}
+]

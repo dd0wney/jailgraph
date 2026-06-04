@@ -1,0 +1,72 @@
+package profile
+
+import (
+	"context"
+	"testing"
+
+	"github.com/dd0wney/jailgraph/internal/graphdb"
+	"github.com/dd0wney/jailgraph/internal/model"
+)
+
+// fakeGraph serves a tiny fixed graph: run r1 with one process (pid 10) that
+// opened /etc/hostname and invoked openat; plus a DIFFERENT run's process to
+// prove run-scoping by _key prefix.
+type fakeGraph struct{}
+
+func (fakeGraph) NodesByLabel(_ context.Context, label string, _ int) ([]*graphdb.NodeResponse, error) {
+	switch label {
+	case model.LabelRun:
+		return []*graphdb.NodeResponse{
+			{ID: 1, Labels: []string{model.LabelRun}, Properties: map[string]any{"id": "r1", "target": "/bin/sh", "lossy": false}},
+		}, nil
+	case model.LabelProcess:
+		return []*graphdb.NodeResponse{
+			{ID: 10, Labels: []string{model.LabelProcess}, Properties: map[string]any{model.PropKey: model.ProcessKey("r1", 10)}},
+			{ID: 99, Labels: []string{model.LabelProcess}, Properties: map[string]any{model.PropKey: model.ProcessKey("OTHER", 99)}},
+		}, nil
+	}
+	return nil, nil
+}
+
+func (fakeGraph) Traverse(_ context.Context, startID uint64, _ int) ([]*graphdb.NodeResponse, error) {
+	if startID == 10 {
+		return []*graphdb.NodeResponse{
+			{ID: 20, Labels: []string{model.LabelSyscall}, Properties: map[string]any{"name": "openat"}},
+			{ID: 21, Labels: []string{model.LabelFile}, Properties: map[string]any{"path": "/etc/hostname"}},
+			{ID: 22, Labels: []string{model.LabelBinary}, Properties: map[string]any{"path": "/bin/sh"}},
+		}, nil
+	}
+	// Process 99 belongs to another run and must never be traversed.
+	return nil, errUnexpectedTraverse
+}
+
+var errUnexpectedTraverse = &traverseErr{}
+
+type traverseErr struct{}
+
+func (*traverseErr) Error() string { return "traversed a process outside the requested run" }
+
+func TestCollect_ScopesToRunAndBucketsByLabel(t *testing.T) {
+	b, err := Collect(context.Background(), fakeGraph{}, "r1", 100)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if b.Target != "/bin/sh" || b.Lossy {
+		t.Errorf("run metadata wrong: %+v", b)
+	}
+	if !b.Syscalls["openat"] {
+		t.Error("expected openat observed")
+	}
+	if len(b.Files) != 1 || b.Files[0] != "/etc/hostname" {
+		t.Errorf("files = %v, want [/etc/hostname]", b.Files)
+	}
+	if len(b.Binaries) != 1 || b.Binaries[0] != "/bin/sh" {
+		t.Errorf("binaries = %v, want [/bin/sh]", b.Binaries)
+	}
+}
+
+func TestCollect_UnknownRunErrors(t *testing.T) {
+	if _, err := Collect(context.Background(), fakeGraph{}, "nope", 100); err == nil {
+		t.Fatal("expected error for unknown run")
+	}
+}

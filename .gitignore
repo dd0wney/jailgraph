@@ -1,0 +1,5 @@
+/jailgraph
+/bin/
+*.test
+*.out
+.DS_Store

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Cross-platform unit tests + build (the portable core).
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./... -count=1 -short
+
+  # Confirm the Linux-only seccomp backend compiles for both arches.
+  cross-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: GOOS=linux GOARCH=amd64 go build ./...
+      - run: GOOS=linux GOARCH=arm64 go build ./...
+
+  # Runtime validation of the seccomp backend — only possible on real Linux.
+  # Runs the build-tagged trace test (internal/seccomp/trace_linux_test.go):
+  # traces /bin/sh and asserts the emitted BehaviorEvents. Unprivileged (the
+  # no_new_privs path needs no root). This is the gate that would catch a
+  # filter attached to the wrong thread (empty event stream).
+  seccomp-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go test ./internal/seccomp/... -count=1 -tags linux_integration
