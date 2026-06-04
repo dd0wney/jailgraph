@@ -150,6 +150,69 @@ func TestFlush_DeduplicatesAgainstPriorRun(t *testing.T) {
 	}
 }
 
+func TestFlush_EmptyGraph(t *testing.T) {
+	// An empty run still writes the Run node, no nodes/edges, no error.
+	f := &fakeClient{}
+	w := NewWorker(f, quietLogger())
+	sess := run.New("/bin/true", time.Unix(0, 0))
+	stats, err := w.Flush(context.Background(), sess, aggregate.New(sess.ID))
+	if err != nil {
+		t.Fatalf("Flush empty: %v", err)
+	}
+	if stats.NodesCreated != 0 || stats.EdgesCreated != 0 || stats.EdgesQuarantined != 0 {
+		t.Errorf("empty graph stats = %+v, want all zero", stats)
+	}
+	if _, ok := w.cache.Get(model.RunKey(sess.ID)); !ok {
+		t.Error("Run node should still be created for an empty graph")
+	}
+}
+
+func TestFlush_ChunkingAcrossMultipleBatches(t *testing.T) {
+	// batchSize 2 with a sample graph (>2 nodes) must create every node across
+	// multiple batches and resolve all edges.
+	f := &fakeClient{}
+	w := NewWorker(f, quietLogger(), WithBatchSize(2))
+	sess := run.New("/bin/sh", time.Unix(0, 0))
+	stats, err := w.Flush(context.Background(), sess, buildSampleGraph(sess.ID))
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if stats.NodesDropped != 0 || stats.EdgesQuarantined != 0 || stats.EdgesDropped != 0 {
+		t.Errorf("chunked flush lost items: %+v", stats)
+	}
+	if stats.NodesCreated < 3 || stats.EdgesCreated < 3 {
+		t.Errorf("expected the full sample created across batches, got %+v", stats)
+	}
+}
+
+func TestChunked(t *testing.T) {
+	cases := []struct {
+		n, size, wantChunks int
+	}{
+		{0, 5, 0},  // empty
+		{4, 2, 2},  // exact multiple
+		{5, 2, 3},  // remainder
+		{3, 10, 1}, // size >= len
+		{3, 1, 3},  // size 1
+		{3, 0, 1},  // size 0 -> single chunk (defensive, no infinite loop)
+		{3, -1, 1}, // negative -> single chunk
+	}
+	for _, c := range cases {
+		in := make([]int, c.n)
+		got := chunked(in, c.size)
+		if len(got) != c.wantChunks {
+			t.Errorf("chunked(len=%d,size=%d) = %d chunks, want %d", c.n, c.size, len(got), c.wantChunks)
+		}
+		var total int
+		for _, ch := range got {
+			total += len(ch)
+		}
+		if total != c.n {
+			t.Errorf("chunked(len=%d,size=%d) dropped items: total=%d", c.n, c.size, total)
+		}
+	}
+}
+
 func TestFlush_QuarantinesEdgeWithDroppedEndpoint(t *testing.T) {
 	// Drop the File node; the OPENED edge to it must be quarantined, not sent.
 	fileKey := model.FileKey("/etc/hostname")

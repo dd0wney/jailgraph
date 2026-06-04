@@ -1,6 +1,7 @@
 package buffer
 
 import (
+	"runtime"
 	"sync"
 	"testing"
 
@@ -72,6 +73,63 @@ func TestRing_DrainRespectsMax(t *testing.T) {
 	}
 	if r.Len() != 70 {
 		t.Errorf("remaining = %d, want 70", r.Len())
+	}
+}
+
+func TestRing_Drain0(t *testing.T) {
+	r := New(4)
+	r.Push(collector.BehaviorEvent{})
+	if got := r.Drain(0); len(got) != 0 {
+		t.Errorf("Drain(0) = %d items, want 0", len(got))
+	}
+	if r.Len() != 1 {
+		t.Errorf("Drain(0) should not consume; Len = %d, want 1", r.Len())
+	}
+}
+
+func TestRing_ConcurrentPushAndDrain(t *testing.T) {
+	// The real main.go pattern: producers Push while a consumer Drains. Run under
+	// -race; assert nothing is lost or duplicated (pushed == drained + dropped + remaining).
+	const producers, perProducer = 8, 500
+	r := New(256)
+	var wg sync.WaitGroup
+	for p := 0; p < producers; p++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perProducer; i++ {
+				r.Push(collector.BehaviorEvent{Kind: collector.EventSyscall})
+			}
+		}()
+	}
+	prodDone := make(chan struct{})
+	go func() { wg.Wait(); close(prodDone) }()
+
+	// Single consumer draining concurrently with the producers.
+	var drained int64
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			n := len(r.Drain(64))
+			drained += int64(n)
+			if n == 0 {
+				select {
+				case <-prodDone:
+					drained += int64(len(r.Drain(1 << 20))) // final sweep
+					return
+				default:
+					runtime.Gosched()
+				}
+			}
+		}
+	}()
+	<-done
+
+	total := drained + r.TotalDropped() + int64(r.Len())
+	if total != producers*perProducer {
+		t.Errorf("accounting off: drained=%d dropped=%d remaining=%d total=%d, want %d",
+			drained, r.TotalDropped(), r.Len(), total, producers*perProducer)
 	}
 }
 

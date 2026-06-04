@@ -2,6 +2,7 @@ package profile
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/dd0wney/jailgraph/internal/graphdb"
@@ -72,5 +73,89 @@ func TestCollect_ScopesToRunAndBucketsByLabel(t *testing.T) {
 func TestCollect_UnknownRunErrors(t *testing.T) {
 	if _, err := Collect(context.Background(), fakeGraph{}, "nope", 100); err == nil {
 		t.Fatal("expected error for unknown run")
+	}
+}
+
+// stubGraph is a configurable fake for error/edge-case paths.
+type stubGraph struct {
+	onLabel    error
+	onTraverse error
+	runs       []*graphdb.NodeResponse
+	procs      []*graphdb.NodeResponse
+	neighbors  []*graphdb.NodeResponse
+}
+
+func (g stubGraph) NodesByLabel(_ context.Context, label string, _ int) ([]*graphdb.NodeResponse, error) {
+	if g.onLabel != nil {
+		return nil, g.onLabel
+	}
+	switch label {
+	case model.LabelRun:
+		return g.runs, nil
+	case model.LabelProcess:
+		return g.procs, nil
+	}
+	return nil, nil
+}
+
+func (g stubGraph) Traverse(_ context.Context, _ uint64, _ int) ([]*graphdb.NodeResponse, error) {
+	if g.onTraverse != nil {
+		return nil, g.onTraverse
+	}
+	return g.neighbors, nil
+}
+
+func runNode() *graphdb.NodeResponse {
+	return &graphdb.NodeResponse{ID: 1, Labels: []string{model.LabelRun}, Properties: map[string]any{"id": "r1", "coverage": "full"}}
+}
+func procNode() *graphdb.NodeResponse {
+	return &graphdb.NodeResponse{ID: 10, Labels: []string{model.LabelProcess}, Properties: map[string]any{model.PropKey: model.ProcessKey("r1", 10)}}
+}
+
+func TestCollect_PropagatesErrors(t *testing.T) {
+	boom := errors.New("boom")
+	if _, err := Collect(context.Background(), stubGraph{onLabel: boom}, "r1", 100); err == nil {
+		t.Error("expected NodesByLabel error to propagate")
+	}
+	g := stubGraph{runs: []*graphdb.NodeResponse{runNode()}, procs: []*graphdb.NodeResponse{procNode()}, onTraverse: boom}
+	if _, err := Collect(context.Background(), g, "r1", 100); err == nil {
+		t.Error("expected Traverse error to propagate")
+	}
+}
+
+func TestCollect_ZeroProcessesIsEmptyNotError(t *testing.T) {
+	// Run exists, but no process carries this run's _key prefix.
+	other := &graphdb.NodeResponse{ID: 99, Labels: []string{model.LabelProcess}, Properties: map[string]any{model.PropKey: model.ProcessKey("OTHER", 99)}}
+	g := stubGraph{runs: []*graphdb.NodeResponse{runNode()}, procs: []*graphdb.NodeResponse{other}}
+	b, err := Collect(context.Background(), g, "r1", 100)
+	if err != nil {
+		t.Fatalf("zero processes should not error: %v", err)
+	}
+	if len(b.Syscalls) != 0 || len(b.Files) != 0 || len(b.Binaries) != 0 {
+		t.Errorf("expected empty behavior, got %+v", b)
+	}
+	if !b.FullCoverage {
+		t.Error("coverage flag should still be read from the Run node")
+	}
+}
+
+func TestCollect_TolerantOfMalformedProperties(t *testing.T) {
+	// Neighbors with missing labels, missing properties, and a non-string value
+	// must be skipped without panicking.
+	g := stubGraph{
+		runs:  []*graphdb.NodeResponse{runNode()},
+		procs: []*graphdb.NodeResponse{procNode()},
+		neighbors: []*graphdb.NodeResponse{
+			{ID: 20, Labels: nil, Properties: nil},                                                  // no labels
+			{ID: 21, Labels: []string{model.LabelSyscall}, Properties: map[string]any{"name": 123}}, // non-string
+			{ID: 22, Labels: []string{model.LabelFile}, Properties: map[string]any{}},               // missing path
+		},
+	}
+	b, err := Collect(context.Background(), g, "r1", 100)
+	if err != nil {
+		t.Fatalf("malformed properties should be tolerated: %v", err)
+	}
+	if len(b.Syscalls) != 0 || len(b.Files) != 0 {
+		t.Errorf("malformed neighbors should be skipped, got %+v", b)
 	}
 }

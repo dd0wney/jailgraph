@@ -108,6 +108,94 @@ func TestDoJSON_DoesNotRetryOn400(t *testing.T) {
 	}
 }
 
+func TestDoJSON_5xxRetriesThenExhausts(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	c := New(Config{BaseURL: srv.URL, APIKey: "t", MaxRetries: 2, Sleep: func(time.Duration) {}})
+	_, err := c.BatchNodes(context.Background(), []NodeRequest{{Labels: []string{"X"}}})
+	if !errors.Is(err, ErrServer) {
+		t.Fatalf("err = %v, want ErrServer", err)
+	}
+	if calls != 3 { // initial + 2 retries
+		t.Errorf("calls = %d, want 3 (initial + MaxRetries)", calls)
+	}
+}
+
+func TestDoJSON_TransportErrorIsRetriedThenSurfaced(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close() // now nothing is listening -> connection refused (transport error)
+	c := New(Config{BaseURL: url, APIKey: "t", MaxRetries: 1, Sleep: func(time.Duration) {}})
+	if _, err := c.CreateNode(context.Background(), NodeRequest{Labels: []string{"Run"}}); err == nil {
+		t.Fatal("expected a transport error")
+	} else if !errors.Is(err, ErrServer) {
+		t.Errorf("transport error should wrap ErrServer, got %v", err)
+	}
+}
+
+func TestDoJSON_MalformedJSONResponseSurfaced(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{ this is not json"))
+	}))
+	defer srv.Close()
+	c := newTestClient(srv)
+	if _, err := c.CreateNode(context.Background(), NodeRequest{Labels: []string{"Run"}}); err == nil {
+		t.Fatal("expected a decode error on malformed JSON")
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	cases := map[string]time.Duration{
+		"1":   time.Second,
+		"5":   5 * time.Second,
+		"0":   0,
+		"":    0,
+		"abc": 0, // non-numeric -> 0 (falls through to exponential backoff)
+	}
+	for in, want := range cases {
+		if got := parseRetryAfter(in); got != want {
+			t.Errorf("parseRetryAfter(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestBatchEdges_AndEmptyBatches(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		switch r.URL.Path {
+		case "/edges/batch":
+			var req batchEdgeRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			out := make([]*EdgeResponse, 0, len(req.Edges))
+			for i, e := range req.Edges {
+				out = append(out, &EdgeResponse{ID: uint64(i + 1), FromNodeID: e.FromNodeID, ToNodeID: e.ToNodeID, Type: e.Type})
+			}
+			_ = json.NewEncoder(w).Encode(batchEdgeResponse{Edges: out, Created: len(out)})
+		default:
+			_ = json.NewEncoder(w).Encode(batchNodeResponse{})
+		}
+	}))
+	defer srv.Close()
+	c := newTestClient(srv)
+
+	edges, err := c.BatchEdges(context.Background(), []EdgeRequest{{FromNodeID: 1, ToNodeID: 2, Type: "X"}})
+	if err != nil || len(edges) != 1 {
+		t.Fatalf("BatchEdges: got %d edges, err %v", len(edges), err)
+	}
+	// Empty batches must round-trip cleanly (no panic, no error).
+	if e, err := c.BatchEdges(context.Background(), nil); err != nil || len(e) != 0 {
+		t.Errorf("empty BatchEdges: %d edges, err %v", len(e), err)
+	}
+	if n, err := c.BatchNodes(context.Background(), nil); err != nil || len(n) != 0 {
+		t.Errorf("empty BatchNodes: %d nodes, err %v", len(n), err)
+	}
+}
+
 func TestNodesByLabel_FollowsCursorToCompletion(t *testing.T) {
 	// Three nodes across two pages; the client must concatenate both.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

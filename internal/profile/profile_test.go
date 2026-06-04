@@ -212,6 +212,61 @@ func TestRenderFirejail_CapsByCoverage(t *testing.T) {
 	}
 }
 
+func TestRenderFirejail_EmptyAndNilFieldsDoNotPanic(t *testing.T) {
+	// A behavior with no files, nil caps/namespaces, partial coverage must render
+	// without panicking and fall back to the conservative caps default.
+	b := Behavior{RunID: "r0", Syscalls: map[string]bool{}}
+	out := RenderFirejail(b)
+	if !strings.Contains(out, "(no file opens observed)") {
+		t.Errorf("expected empty-files note; got:\n%s", out)
+	}
+	if !strings.Contains(out, "caps.drop all") {
+		t.Error("empty/partial behavior should drop all caps")
+	}
+}
+
+func TestRenderSeccompOCI_FullCoverageEmptyObserved_FloorOnly(t *testing.T) {
+	// Full coverage but no syscalls observed: the allowlist is the safe floor
+	// only (a real program always trips some, but the renderer must be robust).
+	b := Behavior{RunID: "rf", FullCoverage: true, Syscalls: map[string]bool{}}
+	data, err := RenderSeccompOCI(b, SeccompOptions{})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	def, allow := parseSeccomp(t, data)
+	if def != "SCMP_ACT_LOG" {
+		t.Errorf("default = %q, want SCMP_ACT_LOG", def)
+	}
+	if !contains(allow, "read") || !contains(allow, "futex") {
+		t.Error("floor syscalls should be present even with no observed syscalls")
+	}
+}
+
+func TestUnion_SingleAndNilSyscalls(t *testing.T) {
+	// One behavior: passes through; FullCoverage reflects it.
+	u := Union("r1", Behavior{Syscalls: map[string]bool{"openat": true}, FullCoverage: true})
+	if !u.FullCoverage || !u.Syscalls["openat"] {
+		t.Errorf("single-behavior union wrong: %+v", u)
+	}
+	// Nil Syscalls map must be safe (ranging a nil map is a no-op in Go).
+	u2 := Union("r2", Behavior{FullCoverage: true}, Behavior{Syscalls: nil, FullCoverage: true})
+	if !u2.FullCoverage {
+		t.Error("union of full+full(nil syscalls) should stay full coverage")
+	}
+	if len(u2.Syscalls) != 0 {
+		t.Errorf("expected no syscalls, got %v", u2.Syscalls)
+	}
+}
+
+func TestDeniedSyscalls_NilMapIsSafe(t *testing.T) {
+	// Indexing a nil map returns the zero value, so every gateable syscall is
+	// "denied" without panicking.
+	b := Behavior{} // nil Syscalls
+	if len(b.DeniedSyscalls()) != len(GateableSyscalls) {
+		t.Errorf("nil-Syscalls DeniedSyscalls = %d, want all %d", len(b.DeniedSyscalls()), len(GateableSyscalls))
+	}
+}
+
 func TestUnion_MergesAndCoverageIsAND(t *testing.T) {
 	full1 := Behavior{Syscalls: map[string]bool{"openat": true}, Files: []string{"/a"}, Caps: []string{"CAP_NET_RAW"}, FullCoverage: true}
 	full2 := Behavior{Syscalls: map[string]bool{"read": true}, Files: []string{"/b"}, FullCoverage: true}

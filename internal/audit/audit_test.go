@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/dd0wney/jailgraph/internal/profile"
@@ -68,6 +69,74 @@ func TestDriftDetected_SecurityVsReproducibility(t *testing.T) {
 	// Reproducibility cares about any symmetric drift → drift.
 	if !r.DriftDetected(ModeReproducibility) {
 		t.Error("reproducibility mode should flag removed syscall")
+	}
+}
+
+func TestNormalizePath(t *testing.T) {
+	cases := map[string]string{
+		// Volatile prefixes bucket to a single token (incl. the bare prefix).
+		"/tmp":              "/tmp/*",
+		"/tmp/build-aaa111": "/tmp/*",
+		"/proc/1234/status": "/proc/*",
+		"/var/tmp/x":        "/var/tmp/*",
+		"/dev/shm/sem.abc":  "/dev/shm/*",
+		// Short version/arch numbers are PRESERVED (not masked).
+		"/lib/x86_64-linux-gnu/libc.so.6": "/lib/x86_64-linux-gnu/libc.so.6",
+		"/usr/lib/libfoo-2.35.so":         "/usr/lib/libfoo-2.35.so",
+		// Long runs (pids/timestamps/random) outside volatile prefixes collapse.
+		"/home/u/.cache/build-1717459200": "/home/u/.cache/build-#",
+		// Edge inputs.
+		"/":             "/",
+		"":              "",
+		"/etc/hostname": "/etc/hostname",
+	}
+	for in, want := range cases {
+		if got := normalizePath(in); got != want {
+			t.Errorf("normalizePath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNormalizePath_DoesNotMaskVersionDriftInVerdict(t *testing.T) {
+	// Two runs differ only by a library version — a file-dimension difference.
+	// It may or may not show in the (informational) file section, but it must
+	// NEVER drive the verdict in either mode.
+	baseline := bSet([]string{"openat"}, []string{"/usr/lib/libc-2.31.so"}, []string{"/bin/x"})
+	candidate := bSet([]string{"openat"}, []string{"/usr/lib/libc-2.35.so"}, []string{"/bin/x"})
+	r := Diff(baseline, candidate)
+	if r.DriftDetected(ModeSecurity) || r.DriftDetected(ModeReproducibility) {
+		t.Error("a file-only difference must not drive the verdict")
+	}
+	// With the tightened regex, short versions survive, so the difference IS
+	// visible in the informational file section.
+	if r.Files.empty() {
+		t.Error("expected the version difference to appear in the informational file section")
+	}
+}
+
+func TestRenderText(t *testing.T) {
+	baseline := bSet([]string{"openat"}, []string{"/etc/a"}, []string{"/bin/x"})
+	candidate := bSet([]string{"openat", "setns"}, []string{"/etc/a"}, []string{"/bin/x", "/bin/y"})
+	r := Diff(baseline, candidate)
+	r.BaselineRuns = []string{"runA"}
+	r.CandidateRun = "runB"
+
+	out := r.RenderText(ModeSecurity)
+	for _, want := range []string{
+		"drift audit (mode: security)", "runA", "runB",
+		"syscalls (high confidence)", "+ setns", // the added syscall
+		"binaries (medium confidence)", "+ /bin/y",
+		"files (LOW confidence", "DRIFT DETECTED",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("RenderText missing %q in:\n%s", want, out)
+		}
+	}
+
+	// No-drift verdict line.
+	clean := Diff(baseline, baseline)
+	if !strings.Contains(clean.RenderText(ModeReproducibility), "no drift in stable dimensions") {
+		t.Error("expected the no-drift verdict line")
 	}
 }
 

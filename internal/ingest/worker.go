@@ -247,6 +247,9 @@ type edgeTuple struct {
 }
 
 func chunked[T any](in []T, size int) [][]T {
+	if size <= 0 {
+		size = len(in) // defensive: never loop forever on a non-positive size
+	}
 	var out [][]T
 	for i := 0; i < len(in); i += size {
 		end := min(i+size, len(in))

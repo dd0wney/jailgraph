@@ -126,11 +126,15 @@ func writeDim(sb *strings.Builder, title string, d DimDrift) {
 // volatile path prefixes whose contents are nondeterministic per run.
 var volatilePrefixes = []string{"/tmp", "/var/tmp", "/run", "/dev/shm", "/proc"}
 
-var digitRun = regexp.MustCompile(`[0-9]{2,}`)
+// digitRun matches LONG digit runs only (>=6) — pids, timestamps, random temp
+// suffixes — deliberately NOT short numbers, so library versions (libc-2.35) and
+// arch designators (x86_64) survive. File drift is the informational (non-verdict)
+// dimension, so this normalization is intentionally lossy: it suppresses volatile
+// noise without masking meaningful version/arch differences.
+var digitRun = regexp.MustCompile(`[0-9]{6,}`)
 
-// normalizePath buckets volatile paths and collapses digit runs (pids,
-// timestamps, random suffixes) so benign per-run variation does not read as
-// drift.
+// normalizePath buckets volatile paths (their contents are nondeterministic per
+// run) and collapses long digit runs elsewhere.
 func normalizePath(p string) string {
 	for _, pre := range volatilePrefixes {
 		if p == pre || strings.HasPrefix(p, pre+"/") {

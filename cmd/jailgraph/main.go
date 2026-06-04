@@ -61,17 +61,11 @@ func main() {
 		usage()
 	}
 	if err != nil {
-		// exitErr carries an explicit code (audit distinguishes drift-found
-		// from couldn't-audit); everything else is a generic failure.
-		var ee *exitErr
-		if errors.As(err, &ee) {
-			if ee.msg != "" {
-				fmt.Fprintln(os.Stderr, "jailgraph:", ee.msg)
-			}
-			os.Exit(ee.code)
+		code, msg := resolveExit(err)
+		if msg != "" {
+			fmt.Fprintln(os.Stderr, "jailgraph:", msg)
 		}
-		fmt.Fprintln(os.Stderr, "jailgraph:", err)
-		os.Exit(1)
+		os.Exit(code)
 	}
 }
 
@@ -82,6 +76,29 @@ type exitErr struct {
 }
 
 func (e *exitErr) Error() string { return e.msg }
+
+// resolveExit maps an error to a process exit code and an optional stderr
+// message. An exitErr carries an explicit code (audit distinguishes drift-found
+// from couldn't-audit, and uses an empty message when the report was already
+// printed); everything else is a generic failure (code 1).
+func resolveExit(err error) (code int, msg string) {
+	var ee *exitErr
+	if errors.As(err, &ee) {
+		return ee.code, ee.msg
+	}
+	return 1, err.Error()
+}
+
+// splitCSV splits a comma-separated flag value into trimmed, non-empty parts.
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
@@ -131,18 +148,13 @@ func runAudit(argv []string) error {
 	}
 
 	var bases []profile.Behavior
-	var baseIDs []string
-	for _, id := range strings.Split(*baseCSV, ",") {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
-		}
+	baseIDs := splitCSV(*baseCSV)
+	for _, id := range baseIDs {
 		b, err := collect(id)
 		if err != nil {
 			return err
 		}
 		bases = append(bases, b)
-		baseIDs = append(baseIDs, id)
 	}
 	cand, err := collect(*against)
 	if err != nil {
@@ -297,12 +309,7 @@ func runProfile(argv []string) error {
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}
-	var ids []string
-	for _, id := range strings.Split(*runID, ",") {
-		if id = strings.TrimSpace(id); id != "" {
-			ids = append(ids, id)
-		}
-	}
+	ids := splitCSV(*runID)
 	if len(ids) == 0 {
 		return fmt.Errorf("--run is required")
 	}
