@@ -58,6 +58,41 @@ type Behavior struct {
 	FullCoverage bool
 }
 
+// Union merges several runs' behaviors into one — the way to build an
+// enforce-safe baseline, since a single run misses error/signal/rare-branch
+// paths. Set-valued fields union; Lossy is OR (any lossy run taints the result);
+// FullCoverage is AND (the union is full-coverage only if EVERY run was — an
+// eBPF run unioned with a seccomp run is partial).
+func Union(runID string, behaviors ...Behavior) Behavior {
+	u := Behavior{RunID: runID, Syscalls: map[string]bool{}, FullCoverage: len(behaviors) > 0}
+	files, bins, caps, ns := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
+	for _, b := range behaviors {
+		for sc := range b.Syscalls {
+			u.Syscalls[sc] = true
+		}
+		addAll(files, b.Files)
+		addAll(bins, b.Binaries)
+		addAll(caps, b.Caps)
+		addAll(ns, b.Namespaces)
+		u.Lossy = u.Lossy || b.Lossy
+		u.FullCoverage = u.FullCoverage && b.FullCoverage
+		if u.Target == "" {
+			u.Target = b.Target
+		}
+	}
+	u.Files = sortedKeys(files)
+	u.Binaries = sortedKeys(bins)
+	u.Caps = sortedKeys(caps)
+	u.Namespaces = sortedKeys(ns)
+	return u
+}
+
+func addAll(set map[string]struct{}, items []string) {
+	for _, it := range items {
+		set[it] = struct{}{}
+	}
+}
+
 // DeniedSyscalls returns the gateable syscalls the run never invoked — the ones
 // the seccomp policy denies. Sorted for deterministic output.
 func (b Behavior) DeniedSyscalls() []string {

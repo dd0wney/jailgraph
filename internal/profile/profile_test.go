@@ -212,6 +212,38 @@ func TestRenderFirejail_CapsByCoverage(t *testing.T) {
 	}
 }
 
+func TestUnion_MergesAndCoverageIsAND(t *testing.T) {
+	full1 := Behavior{Syscalls: map[string]bool{"openat": true}, Files: []string{"/a"}, Caps: []string{"CAP_NET_RAW"}, FullCoverage: true}
+	full2 := Behavior{Syscalls: map[string]bool{"read": true}, Files: []string{"/b"}, FullCoverage: true}
+	partial := Behavior{Syscalls: map[string]bool{"write": true}, FullCoverage: false, Lossy: true}
+
+	// Two full-coverage runs union to full coverage.
+	u := Union("r1,r2", full1, full2)
+	if !u.FullCoverage {
+		t.Error("union of full + full should be full coverage")
+	}
+	if !u.Syscalls["openat"] || !u.Syscalls["read"] {
+		t.Errorf("union missing syscalls: %v", u.Syscalls)
+	}
+	if len(u.Files) != 2 || len(u.Caps) != 1 {
+		t.Errorf("union files=%v caps=%v", u.Files, u.Caps)
+	}
+
+	// Mixing in a partial (e.g. seccomp) run makes the union partial — and lossy.
+	mixed := Union("r1,r3", full1, partial)
+	if mixed.FullCoverage {
+		t.Error("union with a partial run must NOT be full coverage (AND)")
+	}
+	if !mixed.Lossy {
+		t.Error("union with a lossy run must be lossy (OR)")
+	}
+
+	// Empty union is not full coverage.
+	if Union("none").FullCoverage {
+		t.Error("empty union must not claim full coverage")
+	}
+}
+
 func TestRenderFirejail_LossyWarning(t *testing.T) {
 	b := sampleBehavior()
 	b.Lossy = true

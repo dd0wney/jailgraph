@@ -288,7 +288,7 @@ func runProfile(argv []string) error {
 	var (
 		graphURL = fs.String("graphdb-url", envOr("JAILGRAPH_GRAPHDB_URL", "http://localhost:8080"), "graphdb base URL")
 		apiKey   = fs.String("api-key", os.Getenv("JAILGRAPH_API_KEY"), "graphdb API key (X-API-Key)")
-		runID    = fs.String("run", "", "the Run id to generate a profile for (required)")
+		runID    = fs.String("run", "", "Run id(s) to profile; comma-separated runs are unioned (recommended before --enforce) (required)")
 		format   = fs.String("format", "firejail", "output format: firejail | seccomp | both")
 		out      = fs.String("out", "", "write to this file/prefix instead of stdout")
 		force    = fs.Bool("force", false, "generate even from a lossy (incomplete) trace")
@@ -297,15 +297,29 @@ func runProfile(argv []string) error {
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}
-	if *runID == "" {
+	var ids []string
+	for _, id := range strings.Split(*runID, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
 		return fmt.Errorf("--run is required")
 	}
 
 	client := graphdb.New(graphdb.Config{BaseURL: *graphURL, APIKey: *apiKey})
-	b, err := profile.Collect(context.Background(), client, *runID, 500)
-	if err != nil {
-		return err
+	ctx := context.Background()
+	var behaviors []profile.Behavior
+	for _, id := range ids {
+		bi, err := profile.Collect(ctx, client, id, 500)
+		if err != nil {
+			return err
+		}
+		behaviors = append(behaviors, bi)
 	}
+	// Union the runs: a single run misses error/signal/rare-branch paths, so an
+	// enforce-safe baseline should span representative runs. Coverage is AND.
+	b := profile.Union(strings.Join(ids, ","), behaviors...)
 	// Lossy guard: an incomplete trace yields an over-restrictive profile that
 	// can break the program. Refuse unless explicitly forced.
 	if b.Lossy && !*force {

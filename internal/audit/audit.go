@@ -59,27 +59,12 @@ type Report struct {
 	Files DimDrift `json:"files_low_confidence"`
 }
 
-// Union merges several trusted baseline behaviors into one. Baseline quality is
+// Union merges several trusted baseline behaviors into one (delegating to
+// profile.Union — the canonical, complete merge). Baseline quality is
 // proportional to the number of trusted runs unioned: a single run undercounts
 // legitimate behavior and produces false drift.
 func Union(behaviors ...profile.Behavior) profile.Behavior {
-	u := profile.Behavior{Syscalls: map[string]bool{}}
-	fileSet, binSet := map[string]struct{}{}, map[string]struct{}{}
-	for _, b := range behaviors {
-		for sc := range b.Syscalls {
-			u.Syscalls[sc] = true
-		}
-		for _, f := range b.Files {
-			fileSet[f] = struct{}{}
-		}
-		for _, bin := range b.Binaries {
-			binSet[bin] = struct{}{}
-		}
-		u.Lossy = u.Lossy || b.Lossy
-	}
-	u.Files = keys(fileSet)
-	u.Binaries = keys(binSet)
-	return u
+	return profile.Union("", behaviors...)
 }
 
 // Diff compares candidate against the (already unioned) baseline.
@@ -195,14 +180,5 @@ func setFromSlice(s []string) map[string]struct{} {
 	for _, v := range s {
 		out[v] = struct{}{}
 	}
-	return out
-}
-
-func keys(m map[string]struct{}) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
 	return out
 }
