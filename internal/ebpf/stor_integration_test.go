@@ -30,7 +30,7 @@ func TestStor_ReproducibilityConvergence(t *testing.T) {
 		t.Skip("set STOR_BIN and STOR_RECIPE to run the stór convergence test")
 	}
 
-	traceBuild := func() profile.Behavior {
+	traceBuild := func() (profile.Behavior, error) {
 		// Fresh store root each run so stór actually rebuilds (no cache hit),
 		// making the two traces directly comparable.
 		storeRoot := t.TempDir()
@@ -59,15 +59,24 @@ func TestStor_ReproducibilityConvergence(t *testing.T) {
 				bins[e.Exe] = struct{}{}
 			}
 		}
-		_ = coll.Wait()
+		// The target's exit status — a FAILED build must not silently pass: a
+		// reproducibility check over two identically-failing builds would report
+		// "no drift" and hollow-pass. Require the build to have succeeded.
+		buildErr := coll.Wait()
 		for bin := range bins {
 			b.Binaries = append(b.Binaries, bin)
 		}
-		return b
+		return b, buildErr
 	}
 
-	b1 := traceBuild()
-	b2 := traceBuild()
+	b1, err1 := traceBuild()
+	b2, err2 := traceBuild()
+	if err1 != nil || err2 != nil {
+		// stór's build didn't succeed under tracing (e.g. its namespace sandbox
+		// can't run on this host). jailgraph's tracing worked, but there's no
+		// successful build to compare — so this cannot validate the convergence.
+		t.Skipf("stór build failed under tracing (sandbox issue on this host?): run1=%v run2=%v", err1, err2)
+	}
 
 	// Sanity: we actually traced a build (descendant sh ran inside the sandbox).
 	if len(b1.Syscalls) < 12 {
