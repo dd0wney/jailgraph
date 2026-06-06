@@ -1,6 +1,7 @@
 package harden
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -163,5 +164,27 @@ func TestRenderText(t *testing.T) {
 	part := Analyze(bh(false, false, nil, nil, nil, nil)).RenderText()
 	if !strings.Contains(part, "not observable on this backend") {
 		t.Errorf("partial report must state the coverage limit:\n%s", part)
+	}
+}
+
+// TestReport_JSONRoundTrip covers the --json output path: the struct tags emit
+// the documented shape and a marshal/unmarshal cycle preserves the report.
+func TestReport_JSONRoundTrip(t *testing.T) {
+	r := Analyze(bh(true, false, []string{"setns"}, []string{"/etc/shadow"}, []string{"CAP_SYS_ADMIN"}, []string{"user"}))
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, tag := range []string{`"run_id"`, `"coverage"`, `"findings"`, `"severity"`, `"high"`} {
+		if !strings.Contains(string(data), tag) {
+			t.Errorf("json output missing %s in:\n%s", tag, data)
+		}
+	}
+	var got Report
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.RunID != r.RunID || got.Coverage != r.Coverage || len(got.Findings) != len(r.Findings) {
+		t.Errorf("round-trip mismatch:\n got %+v\nwant %+v", got, r)
 	}
 }
