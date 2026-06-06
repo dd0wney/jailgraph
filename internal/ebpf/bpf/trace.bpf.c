@@ -20,6 +20,12 @@
 #define EVENT_EXEC 2
 #define EVENT_OPEN 3
 #define EVENT_NS 4
+#define EVENT_RENAME 5
+#define EVENT_UNLINK 6
+
+// FMODE_WRITE is a fmode_t bit (uapi, not a BTF type) — set when a file is
+// opened for writing.
+#define FMODE_WRITE 0x2
 
 // Namespace-creation flags (CLONE_NEW*), not present in vmlinux.h (they are
 // uapi #defines, not BTF types).
@@ -76,11 +82,39 @@ struct {
 	__type(value, __u8);
 } seen_caps SEC(".maps");
 
-// events: streams SPAWN/EXEC/OPEN records to userspace.
+// events: streams SPAWN/EXEC/OPEN/RENAME/UNLINK records to userspace.
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 1 << 20);
 } events SEC(".maps");
+
+struct path_buf {
+	char path[256];
+};
+
+// write_paths: inode -> resolved path, populated at open-for-write where
+// bpf_d_path is allowlisted. The write hook (where bpf_d_path is NOT allowlisted)
+// keys by inode only; userspace joins the two at teardown.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1 << 14);
+	__type(key, __u64);
+	__type(value, struct path_buf);
+} write_paths SEC(".maps");
+
+// write_stats: inode -> aggregated write count + bytes. Like `seen`, the hot
+// write path is folded IN-KERNEL (never streamed) and read out at teardown. The
+// per-inode counter already folds writes across the tracked subtree (run-level).
+struct write_stat {
+	__u64 count;
+	__u64 bytes;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1 << 14);
+	__type(key, __u64);
+	__type(value, struct write_stat);
+} write_stats SEC(".maps");
 
 SEC("raw_tracepoint/sys_enter")
 int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
@@ -178,6 +212,84 @@ int BPF_PROG(handle_open, struct file *file)
 	e->flags = 0;
 	e->path[0] = 0;
 	bpf_d_path(&file->f_path, e->path, sizeof(e->path));
+	// If opened for write, remember inode -> path so handle_write (which cannot
+	// call bpf_d_path) can attribute its byte counts by inode at teardown. The
+	// value is copied straight from the ringbuf event's path buffer (e->path is a
+	// 256-byte region, matching struct path_buf) to avoid a large stack copy.
+	if (BPF_CORE_READ(file, f_mode) & FMODE_WRITE) {
+		__u64 ino = BPF_CORE_READ(file, f_inode, i_ino);
+		if (ino)
+			bpf_map_update_elem(&write_paths, &ino, e->path, BPF_ANY);
+	}
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+// handle_write aggregates write volume per inode IN-KERNEL — the hot write path
+// is never streamed (mirrors the `seen` syscall map). The path is resolved
+// separately at open time (write_paths), because bpf_d_path is not allowlisted
+// from vfs_write. Covers vfs_write (read/pwrite/write); vfs_writev and mmap
+// writes are a documented v1 blind spot.
+SEC("fentry/vfs_write")
+int BPF_PROG(handle_write, struct file *file, const char *buf, size_t count)
+{
+	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
+	if (!bpf_map_lookup_elem(&tracked, &tgid))
+		return 0;
+	__u64 ino = BPF_CORE_READ(file, f_inode, i_ino);
+	if (!ino)
+		return 0;
+	struct write_stat *st = bpf_map_lookup_elem(&write_stats, &ino);
+	if (st) {
+		st->count += 1;
+		st->bytes += count;
+	} else {
+		struct write_stat init = {.count = 1, .bytes = count};
+		bpf_map_update_elem(&write_stats, &ino, &init, BPF_ANY);
+	}
+	return 0;
+}
+
+// handle_rename / handle_unlink stream the victim's NAME (basename via the
+// dentry; a full path needs a struct path the LSM inode hooks don't provide).
+// The detector sums rename+unlink run-level, so basename-granularity attribution
+// is sufficient — these counts need not join the write nodes by full path.
+SEC("fentry/security_inode_rename")
+int BPF_PROG(handle_rename, struct inode *old_dir, struct dentry *old_dentry)
+{
+	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
+	if (!bpf_map_lookup_elem(&tracked, &tgid))
+		return 0;
+	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e)
+		return 0;
+	e->kind = EVENT_RENAME;
+	e->pid = tgid;
+	e->ppid = 0;
+	e->flags = 0;
+	e->path[0] = 0;
+	const unsigned char *name = BPF_CORE_READ(old_dentry, d_name.name);
+	bpf_probe_read_kernel_str(e->path, sizeof(e->path), name);
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("fentry/security_inode_unlink")
+int BPF_PROG(handle_unlink, struct inode *dir, struct dentry *dentry)
+{
+	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
+	if (!bpf_map_lookup_elem(&tracked, &tgid))
+		return 0;
+	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e)
+		return 0;
+	e->kind = EVENT_UNLINK;
+	e->pid = tgid;
+	e->ppid = 0;
+	e->flags = 0;
+	e->path[0] = 0;
+	const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
+	bpf_probe_read_kernel_str(e->path, sizeof(e->path), name);
 	bpf_ringbuf_submit(e, 0);
 	return 0;
 }
