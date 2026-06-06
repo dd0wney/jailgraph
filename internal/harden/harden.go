@@ -13,7 +13,9 @@
 package harden
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/dd0wney/jailgraph/internal/profile"
 )
@@ -125,8 +127,88 @@ func Analyze(b profile.Behavior) Report {
 			"re-run with --collector ebpf for capability and namespace findings")
 	}
 
+	// R4: namespaces, gated on full coverage (decode is eBPF-only).
+	if b.FullCoverage {
+		for _, n := range b.Namespaces {
+			switch n {
+			case "user":
+				add("namespaces", SevHigh, "user namespace created: user",
+					"observed unshare(CLONE_NEWUSER)",
+					"user namespaces are a privilege-escalation surface; deny if unneeded")
+			case "net":
+				add("namespaces", SevMedium, "network namespace created: net",
+					"observed unshare(CLONE_NEWNET)",
+					"program manages its own networking; review the net policy")
+			default:
+				add("namespaces", SevLow, "namespace created: "+n,
+					"observed unshare for "+n,
+					"informational; confirm the program needs its own "+n+" namespace")
+			}
+		}
+	}
+
+	// R5: dangerous (gateable) syscalls actually observed — the inverse of
+	// DeniedSyscalls(). open/openat/openat2 are ubiquitous (watched for gating,
+	// not inherently dangerous), so they are Low; the rest are Medium.
+	for _, sc := range profile.GateableSyscalls {
+		if !b.Syscalls[sc] {
+			continue
+		}
+		sev := SevMedium
+		switch sc {
+		case "open", "openat", "openat2":
+			sev = SevLow
+		}
+		add("syscalls", sev, "dangerous syscall observed: "+sc,
+			"the program invoked "+sc,
+			"ensure this syscall is intended; a generated seccomp profile keeps it allowed")
+	}
+
+	// R6: sensitive file access.
+	for _, f := range b.Files {
+		if reason := sensitiveReason(f); reason != "" {
+			add("files", SevHigh, "sensitive file accessed: "+f,
+				"observed open of "+f+" ("+reason+")",
+				"confirm the program legitimately needs this path; restrict via the firejail whitelist")
+		}
+	}
+
+	// R7: profile effectiveness — what the matching seccomp profile actually buys.
+	denied := b.DeniedSyscalls()
+	add("effectiveness", SevInfo,
+		fmt.Sprintf("generated seccomp profile would deny %d of %d watched dangerous syscalls",
+			len(denied), len(profile.GateableSyscalls)),
+		"denies: "+strings.Join(denied, ", "),
+		"run `jailgraph profile --run "+b.RunID+" --format seccomp` to emit it")
+
 	finalize(&r)
 	return r
+}
+
+// sensitiveExact/sensitiveDirs drive R6. Kept deliberately small and
+// evidence-based — credential and kernel-memory paths, not a CVE database.
+var sensitiveExact = []string{"/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/dev/mem", "/dev/kmem"}
+var sensitiveDirs = []string{"/root/.ssh", "/etc/ssh", "/etc/sudoers.d"}
+
+// sensitiveReason returns a non-empty reason if path is security-sensitive.
+func sensitiveReason(p string) string {
+	for _, e := range sensitiveExact {
+		if p == e {
+			return "credential/kernel-memory file"
+		}
+	}
+	for _, d := range sensitiveDirs {
+		if p == d || strings.HasPrefix(p, d+"/") {
+			return "credential/key directory"
+		}
+	}
+	if strings.Contains(p, "/.ssh/id_") {
+		return "ssh private key"
+	}
+	if strings.HasPrefix(p, "/proc/") && strings.HasSuffix(p, "/mem") {
+		return "process memory"
+	}
+	return ""
 }
 
 // finalize sorts findings worst-first: descending severity, then category, then

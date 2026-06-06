@@ -81,3 +81,52 @@ func TestAnalyze_CapabilitiesAndCoverage(t *testing.T) {
 		t.Errorf("expected High lossy finding, got %+v", r.Findings)
 	}
 }
+
+func TestAnalyze_NamespacesSyscallsFiles(t *testing.T) {
+	// R4: user NS -> High, net -> Medium, other -> Low (eBPF only).
+	r := Analyze(bh(true, false, nil, nil, nil, []string{"user", "net", "mnt"}))
+	if !has(r, "namespaces", SevHigh, "user") {
+		t.Errorf("expected High user-namespace finding, got %+v", r.Findings)
+	}
+	if !has(r, "namespaces", SevMedium, "net") {
+		t.Errorf("expected Medium net-namespace finding, got %+v", r.Findings)
+	}
+	if !has(r, "namespaces", SevLow, "mnt") {
+		t.Errorf("expected Low mnt-namespace finding, got %+v", r.Findings)
+	}
+	// Partial run: namespaces NOT reported even if present (can't be trusted).
+	r = Analyze(bh(false, false, nil, nil, nil, []string{"user"}))
+	if count(r, "namespaces") != 0 {
+		t.Errorf("partial run must not emit namespace findings, got %+v", r.Findings)
+	}
+
+	// R5: gateable syscall observed -> finding; setns Medium, openat Low.
+	r = Analyze(bh(false, false, []string{"setns", "openat", "read"}, nil, nil, nil))
+	if !has(r, "syscalls", SevMedium, "setns") {
+		t.Errorf("expected Medium setns finding, got %+v", r.Findings)
+	}
+	if !has(r, "syscalls", SevLow, "openat") {
+		t.Errorf("expected Low openat finding, got %+v", r.Findings)
+	}
+	// "read" is not gateable -> no finding.
+	if has(r, "syscalls", SevLow, "read") || has(r, "syscalls", SevMedium, "read") {
+		t.Errorf("non-gateable syscall must not be a finding, got %+v", r.Findings)
+	}
+
+	// R6: sensitive file -> High.
+	r = Analyze(bh(false, false, nil, []string{"/etc/shadow", "/home/u/.ssh/id_rsa", "/etc/hostname"}, nil, nil))
+	if !has(r, "files", SevHigh, "/etc/shadow") {
+		t.Errorf("expected High /etc/shadow finding, got %+v", r.Findings)
+	}
+	if !has(r, "files", SevHigh, "id_rsa") {
+		t.Errorf("expected High ssh-key finding, got %+v", r.Findings)
+	}
+	if count(r, "files") != 2 {
+		t.Errorf("/etc/hostname must not be sensitive; want 2 file findings, got %d (%+v)", count(r, "files"), r.Findings)
+	}
+
+	// R7: effectiveness Info always present.
+	if !has(r, "effectiveness", SevInfo, "would deny") {
+		t.Errorf("expected effectiveness Info finding, got %+v", r.Findings)
+	}
+}
