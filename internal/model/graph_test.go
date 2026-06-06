@@ -180,3 +180,41 @@ func TestEventToGraph_OpenCarriesMode(t *testing.T) {
 		t.Error("expected an OPENED edge")
 	}
 }
+
+func TestEventToGraph_FileActivityIsPerRunNodeWithNoProcessLeak(t *testing.T) {
+	e := collector.BehaviorEvent{
+		Kind: collector.EventFileActivity, Path: "/data/doc.txt",
+		WriteCount: 12, Bytes: 4096, RenameCount: 1, UnlinkCount: 2,
+	}
+	nodes, edges := EventToGraph("runX", e)
+
+	// Exactly one node: the FileActivity node. No Process/Syscall preamble leaks
+	// (a file-activity summary has no single acting process).
+	if len(nodes) != 1 {
+		t.Fatalf("want exactly 1 node, got %d: %+v", len(nodes), nodes)
+	}
+	n := nodes[0]
+	if len(n.Labels) != 1 || n.Labels[0] != LabelFileActivity {
+		t.Errorf("labels = %v, want [%s]", n.Labels, LabelFileActivity)
+	}
+	wantKey := FileActivityKey("runX", "/data/doc.txt")
+	if n.Key != wantKey || n.Properties[PropKey] != wantKey {
+		t.Errorf("key = %q (prop %v), want %q", n.Key, n.Properties[PropKey], wantKey)
+	}
+	for k, want := range map[string]any{
+		"path": "/data/doc.txt", "write_count": int64(12), "bytes": int64(4096),
+		"rename_count": int64(1), "unlink_count": int64(2),
+	} {
+		if n.Properties[k] != want {
+			t.Errorf("prop %s = %v (%T), want %v", k, n.Properties[k], n.Properties[k], want)
+		}
+	}
+
+	// Exactly one edge: PART_OF from the FileActivity node to the Run.
+	if len(edges) != 1 {
+		t.Fatalf("want exactly 1 edge, got %d: %+v", len(edges), edges)
+	}
+	if edges[0].Type != EdgePartOf || edges[0].FromKey != wantKey || edges[0].ToKey != RunKey("runX") {
+		t.Errorf("edge = %+v, want PART_OF %s -> %s", edges[0], wantKey, RunKey("runX"))
+	}
+}

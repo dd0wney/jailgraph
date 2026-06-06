@@ -107,6 +107,50 @@ func TestFlush_CreatesRunNodeFirstSoPartOfResolves(t *testing.T) {
 	}
 }
 
+func TestFlush_FileActivityNodeLandsPerRunWithPartOf(t *testing.T) {
+	f := &fakeClient{}
+	w := NewWorker(f, quietLogger())
+	sess := run.New("/bin/sh", time.Unix(0, 0))
+
+	b := aggregate.New(sess.ID)
+	b.Add(collector.BehaviorEvent{
+		Kind: collector.EventFileActivity, Path: "/data/doc.txt",
+		WriteCount: 9, Bytes: 8192, RenameCount: 1, UnlinkCount: 0,
+	})
+
+	stats, err := w.Flush(context.Background(), sess, b)
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	// The FileActivity node was created carrying its stats...
+	var fa *graphdb.NodeRequest
+	for i := range f.createdNodes {
+		if len(f.createdNodes[i].Labels) == 1 && f.createdNodes[i].Labels[0] == model.LabelFileActivity {
+			fa = &f.createdNodes[i]
+		}
+	}
+	if fa == nil {
+		t.Fatal("FileActivity node not created")
+	}
+	if fa.Properties["write_count"] != int64(9) || fa.Properties["bytes"] != int64(8192) || fa.Properties["rename_count"] != int64(1) {
+		t.Errorf("FileActivity props = %+v", fa.Properties)
+	}
+	// ...and its PART_OF edge to the Run resolved (Run created first, not quarantined).
+	if stats.EdgesQuarantined != 0 {
+		t.Errorf("quarantined %d edges, want 0", stats.EdgesQuarantined)
+	}
+	var partOf int
+	for _, e := range f.createdEdges {
+		if e.Type == model.EdgePartOf {
+			partOf++
+		}
+	}
+	if partOf != 1 {
+		t.Errorf("PART_OF edges = %d, want 1", partOf)
+	}
+}
+
 func TestFlush_ReconcilesOutOfOrderResponse(t *testing.T) {
 	f := &fakeClient{reverse: true}
 	w := NewWorker(f, quietLogger())

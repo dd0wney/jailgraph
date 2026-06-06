@@ -40,6 +40,11 @@ const (
 	// EventJoinNS is an unshare/setns that joined a namespace. Maps to a
 	// JOINED_NS edge (Process -> Namespace).
 	EventJoinNS
+	// EventFileActivity is a per-(run, file) write/rename/unlink summary, emitted
+	// once at teardown after the backend folds raw write/rename/unlink activity
+	// across the process tree. Maps to a per-run FileActivity node (no acting
+	// process — it is a run-level aggregate). The fields below carry its counts.
+	EventFileActivity
 )
 
 // String returns a stable lowercase name for the kind, used to label drop
@@ -58,6 +63,8 @@ func (k EventKind) String() string {
 		return "cap"
 	case EventJoinNS:
 		return "joinns"
+	case EventFileActivity:
+		return "fileio"
 	default:
 		return "unknown"
 	}
@@ -100,6 +107,15 @@ type BehaviorEvent struct {
 	// Namespace (EventJoinNS).
 	NSType string
 	NSID   uint64
+
+	// File I/O aggregate (EventFileActivity). Populated only for that kind; Path
+	// carries the file path. Counts are run-level (folded across the process tree
+	// at teardown). Entropy is intentionally absent in v1 (deferred to phase 2);
+	// the FileActivity node's flat property map accommodates adding it later.
+	WriteCount  int64
+	Bytes       int64
+	RenameCount int64
+	UnlinkCount int64
 
 	// Lossy is true when the producing pipeline dropped events before this one.
 	// It propagates to the Run node so a generated profile is never silently

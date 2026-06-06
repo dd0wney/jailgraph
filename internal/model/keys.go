@@ -30,6 +30,10 @@ const (
 	LabelFile       = "File"
 	LabelCapability = "Capability"
 	LabelNamespace  = "Namespace"
+	// LabelFileActivity is a per-run node carrying write/rename/unlink stats for
+	// one file. Unlike the content-keyed (shared) File node, it is scoped to a run
+	// (its key embeds the run id) so per-run write volume never merges across runs.
+	LabelFileActivity = "FileActivity"
 
 	EdgePartOf   = "PART_OF"
 	EdgeSpawned  = "SPAWNED"
@@ -65,6 +69,19 @@ func SyscallKey(nr int) string { return "sys:" + strconv.Itoa(nr) }
 
 // FileKey identifies a file by absolute path.
 func FileKey(path string) string { return "file:" + path }
+
+// FileActivityKey identifies a per-run file-activity summary. Scoped to a run
+// (like ProcessKey) so write/rename/unlink counts never merge across runs.
+func FileActivityKey(runID, path string) string {
+	return "fileio:" + runID + ":" + path
+}
+
+// FileActivityPrefix is the key prefix for all of a run's FileActivity nodes,
+// used to enumerate them (the detector prefix-scans NodesByLabel like
+// profile.Collect enumerates a run's processes).
+func FileActivityPrefix(runID string) string {
+	return "fileio:" + runID + ":"
+}
 
 // CapKey identifies a Linux capability by name (e.g. "CAP_SYS_ADMIN").
 func CapKey(name string) string { return "cap:" + name }

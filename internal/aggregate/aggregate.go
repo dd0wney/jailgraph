@@ -130,6 +130,10 @@ func toInt(v any) int {
 		return int(x)
 	case int64:
 		return int(x)
+	case float64:
+		// graphdb returns JSON numbers as float64 on read-back; without this a
+		// summed count round-tripped through the server would coerce to 0.
+		return int(x)
 	default:
 		return 0
 	}
