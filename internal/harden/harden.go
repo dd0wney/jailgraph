@@ -185,6 +185,91 @@ func Analyze(b profile.Behavior) Report {
 	return r
 }
 
+// severityOrder is the render/summary order (worst first).
+var severityOrder = []Severity{SevCritical, SevHigh, SevMedium, SevLow, SevInfo}
+
+// HasHighOrAbove reports whether any finding is at or above High — drives the
+// CLI exit code (the CI gate).
+func (r Report) HasHighOrAbove() bool {
+	for _, f := range r.Findings {
+		if f.Severity.rank() >= SevHigh.rank() {
+			return true
+		}
+	}
+	return false
+}
+
+// counts returns the number of findings per severity.
+func (r Report) counts() map[Severity]int {
+	m := map[Severity]int{}
+	for _, f := range r.Findings {
+		m[f.Severity]++
+	}
+	return m
+}
+
+// RenderText renders a Lynis-style report: the coverage preamble first (epistemic
+// state before findings), then findings grouped worst-first, then a severity
+// summary line. Mirrors audit.Report.RenderText's strings.Builder idiom.
+func (r Report) RenderText() string {
+	var sb strings.Builder
+	w := func(f string, a ...any) { fmt.Fprintf(&sb, f, a...); sb.WriteByte('\n') }
+
+	w("hardening report")
+	w("  target:   %s", r.Target)
+	w("  run:      %s", r.RunID)
+	w("  coverage: %s", r.Coverage)
+	if !strings.HasPrefix(r.Coverage, "full") {
+		w("  NOTE: capabilities and namespaces are not observable on this backend;")
+		w("        re-run with --collector ebpf for those findings.")
+	}
+	if r.Lossy {
+		w("  WARNING: trace was lossy — findings may be incomplete (absence is not evidence of absence).")
+	}
+	w("")
+
+	for _, sev := range severityOrder {
+		first := true
+		for _, f := range r.Findings {
+			if f.Severity != sev {
+				continue
+			}
+			if first {
+				w("== %s ==", strings.ToUpper(string(sev)))
+				first = false
+			}
+			w("[%s] %s", strings.ToUpper(string(sev)), f.Title)
+			w("    evidence:  %s", f.Evidence)
+			w("    recommend: %s", f.Recommendation)
+		}
+		if !first {
+			w("")
+		}
+	}
+
+	c := r.counts()
+	var parts []string
+	for _, sev := range severityOrder {
+		if c[sev] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", c[sev], titleCase(string(sev))))
+		}
+	}
+	if len(parts) == 0 {
+		parts = []string{"no findings"}
+	}
+	w("summary: %s", strings.Join(parts, ", "))
+	return sb.String()
+}
+
+// titleCase upper-cases the first byte of an ASCII word (severity labels are
+// lowercase ASCII). Avoids the deprecated strings.Title.
+func titleCase(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
 // sensitiveExact/sensitiveDirs drive R6. Kept deliberately small and
 // evidence-based — credential and kernel-memory paths, not a CVE database.
 var sensitiveExact = []string{"/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/dev/mem", "/dev/kmem"}

@@ -130,3 +130,38 @@ func TestAnalyze_NamespacesSyscallsFiles(t *testing.T) {
 		t.Errorf("expected effectiveness Info finding, got %+v", r.Findings)
 	}
 }
+
+func TestHasHighOrAbove(t *testing.T) {
+	clean := Analyze(bh(true, false, nil, nil, nil, nil)) // only Info findings
+	if clean.HasHighOrAbove() {
+		t.Errorf("clean eBPF report should not be >=High, got %+v", clean.Findings)
+	}
+	risky := Analyze(bh(true, false, nil, nil, []string{"CAP_SYS_ADMIN"}, nil))
+	if !risky.HasHighOrAbove() {
+		t.Error("report with a High cap finding must be >=High")
+	}
+}
+
+func TestRenderText(t *testing.T) {
+	r := Analyze(bh(true, false, []string{"setns"}, []string{"/etc/shadow"}, []string{"CAP_SYS_ADMIN"}, []string{"user"}))
+	out := r.RenderText()
+	for _, want := range []string{
+		"hardening report",
+		"coverage: full (eBPF)",
+		"[HIGH]", "CAP_SYS_ADMIN",
+		"user namespace",
+		"[MEDIUM]", "setns",
+		"sensitive file accessed: /etc/shadow",
+		"summary:", "High",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("RenderText missing %q in:\n%s", want, out)
+		}
+	}
+
+	// A partial run must SAY caps/NS are unobservable, not omit silently.
+	part := Analyze(bh(false, false, nil, nil, nil, nil)).RenderText()
+	if !strings.Contains(part, "not observable on this backend") {
+		t.Errorf("partial report must state the coverage limit:\n%s", part)
+	}
+}
