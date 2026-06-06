@@ -317,6 +317,50 @@ func TestRunAudit_FlagErrorsExitTwo(t *testing.T) {
 	}
 }
 
+// reportFake seeds one run whose single process touched the given neighbors.
+func reportFake(coverage string, neighbors ...*graphdb.NodeResponse) *fakeGraph {
+	f := newFakeGraph()
+	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{
+		node(1, model.LabelRun, map[string]any{"id": "r1", "coverage": coverage, "target": "/bin/x"}),
+	}
+	f.byLabel[model.LabelProcess] = []*graphdb.NodeResponse{
+		node(10, model.LabelProcess, map[string]any{model.PropKey: model.ProcessKey("r1", 10)}),
+	}
+	f.byNode[10] = neighbors
+	return f
+}
+
+func TestRunReport_HighFindingExitsOne(t *testing.T) {
+	// Full-coverage run that opened a sensitive file -> a High finding -> exit 1.
+	f := reportFake("full",
+		node(30, model.LabelSyscall, map[string]any{"name": "setns"}),
+		node(31, model.LabelFile, map[string]any{"path": "/etc/shadow"}),
+	)
+	withFakeGraph(t, f)
+	err := runReport([]string{"--run", "r1", "--api-key", "x"})
+	if code, _ := resolveExit(err); code != 1 {
+		t.Errorf("a High finding should exit 1, got code %d (err %v)", code, err)
+	}
+}
+
+func TestRunReport_CleanExitsZero(t *testing.T) {
+	// Full-coverage run, only a benign (non-gateable) syscall, no caps/files ->
+	// only Info findings -> exit 0 (nil).
+	f := reportFake("full", node(30, model.LabelSyscall, map[string]any{"name": "read"}))
+	withFakeGraph(t, f)
+	if err := runReport([]string{"--run", "r1", "--api-key", "x"}); err != nil {
+		t.Errorf("a clean full-coverage report should return nil, got %v", err)
+	}
+}
+
+func TestRunReport_MissingRunExitsTwo(t *testing.T) {
+	withFakeGraph(t, newFakeGraph())
+	err := runReport([]string{"--api-key", "x"})
+	if code, _ := resolveExit(err); code != 2 {
+		t.Errorf("missing --run should exit 2, got code %d (err %v)", code, err)
+	}
+}
+
 func eq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

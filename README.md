@@ -116,6 +116,10 @@ jailgraph audit --baseline <run1>,<run2> --against <run3> --mode security
 # Detect ransomware-like behaviour in an eBPF-traced run (structural, v1).
 # Exit codes: 0 = no signature >= High, 1 = signature found, 2 = could not run.
 jailgraph detect --run <run-id>
+
+# Hardening report: evidence-based, severity-ranked findings for one program.
+# Exit codes: 0 = nothing >= High, 1 = a High/Critical finding, 2 = could not run.
+jailgraph report --run <run1>,<run2>
 ```
 
 ### Drift audit (`jailgraph audit`)
@@ -171,6 +175,29 @@ Exit codes: `0` = no signature at/above High, `1` = a High/Critical signature
 (report still printed), `2` = could not run (missing run, or lossy without
 `--force`). The `0` on an inconclusive seccomp run means "nothing detected with
 what this backend can see", not "clean".
+
+### Hardening report (`jailgraph report`)
+
+Turns one program's observed behavior (one run, or several `--run a,b` unioned to
+widen the evidence) into a Lynis-style hardening report: ranked, severity-tagged
+findings, each citing what was **observed**. Evidence-based, not rule-based.
+
+Honesty about coverage is the report's hardest constraint. The seccomp backend
+cannot observe capabilities or namespaces, so those findings are gated on full
+(eBPF) coverage; on a partial run the report **says so explicitly** rather than
+going silent — silence would read as "clean", a false absence. For the same
+reason it emits **no single hardening score**: a number computed over findings
+would rank a seccomp run *higher* than an eBPF run of the same program purely
+because it saw less. Output is ranked findings + a per-severity summary under a
+coverage label. Findings cover held capabilities (eBPF), namespace creation
+(eBPF), dangerous syscalls observed, sensitive-file access, and how much the
+matching seccomp profile would deny.
+
+Exit codes (for CI): **0** = nothing at/above High, **1** = a High/Critical
+finding (report still printed), **2** = could not run (missing run, or a lossy
+trace without `--force`). Note that a clean **seccomp** run exits 0 while flagging
+that capabilities/namespaces were unobservable — a green seccomp report has not
+checked them; re-run with `--collector ebpf` for those.
 
 ### Profile strength (read this before trusting a generated profile)
 
@@ -272,9 +299,17 @@ jailgraph audit --baseline <runA> --against <runB> --mode reproducibility
 ```
 
 A deterministic build produces no stable-dimension (syscall/binary) drift; drift
-there is an impurity signal. Validated end-to-end: `make stor-convergence`
-(needs Docker + sibling repos `../stor-core` and `../graphdb`) traces a real stór
-sandboxed build twice and confirms the reproducibility audit clears it.
+there is an impurity signal. Validated end-to-end on both Linux architectures:
+
+- **linux/arm64** (Docker): `make stor-convergence` (needs Docker + sibling repos
+  `../stor-core` and `../graphdb`) traces a real stór sandboxed build twice and
+  confirms the reproducibility audit clears it.
+- **linux/amd64** (native — Fedora kernel 7.0, BTF present): the same hardened
+  `TestStor_ReproducibilityConvergence`, run privileged against a natively-built
+  stór, confirms convergence — 68 distinct syscalls, 3 binaries, no structural
+  drift (only the tolerated hot-path scheduler noise `+tgkill`/`-sched_yield`). The test
+  skips rather than passes if either build fails, so the PASS attests two genuine,
+  structurally-identical builds — not a hollow result over a shared failure.
 
 ## License
 
