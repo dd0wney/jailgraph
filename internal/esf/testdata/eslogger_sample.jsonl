@@ -1,0 +1,11 @@
+{"event_type":9,"event":{"exec":{"target":{"executable":{"path":"/usr/bin/myapp"}}}},"process":{"audit_token":{"pid":500},"ppid":1,"executable":{"path":"/bin/sh"}}}
+{"event_type":11,"event":{"fork":{"child":{"audit_token":{"pid":501},"ppid":500,"executable":{"path":"/usr/bin/myapp"}}}},"process":{"audit_token":{"pid":500},"ppid":1,"executable":{"path":"/usr/bin/myapp"}}}
+{"event_type":10,"event":{"open":{"fflag":1537,"file":{"path":"/tmp/data/a.txt"}}},"process":{"audit_token":{"pid":501},"ppid":500,"executable":{"path":"/usr/bin/myapp"}}}
+{"event_type":33,"event":{"write":{"target":{"path":"/tmp/data/a.txt"}}},"process":{"audit_token":{"pid":501},"ppid":500,"executable":{"path":"/usr/bin/myapp"}}}
+{"event_type":33,"event":{"write":{"target":{"path":"/tmp/data/a.txt"}}},"process":{"audit_token":{"pid":501},"ppid":500,"executable":{"path":"/usr/bin/myapp"}}}
+{"event_type":33,"event":{"write":{"target":{"path":"/tmp/data/b.txt"}}},"process":{"audit_token":{"pid":501},"ppid":500,"executable":{"path":"/usr/bin/myapp"}}}
+{"event_type":25,"event":{"rename":{"source":{"path":"/tmp/data/a.txt"},"destination":{"existing_file":{"path":"/tmp/data/a.locked"}}}},"process":{"audit_token":{"pid":501},"ppid":500,"executable":{"path":"/usr/bin/myapp"}}}
+{"event_type":30,"event":{"unlink":{"target":{"path":"/tmp/data/old.txt"}}},"process":{"audit_token":{"pid":501},"ppid":500,"executable":{"path":"/usr/bin/myapp"}}}
+{"event_type":33,"event":{"write":{"target":{"path":"/other/x.txt"}}},"process":{"audit_token":{"pid":999},"ppid":1,"executable":{"path":"/usr/bin/unrelated"}}}
+{"event_type":15,"event":{"exit":{"stat":0}},"process":{"audit_token":{"pid":501},"ppid":500,"executable":{"path":"/usr/bin/myapp"}}}
+{"event_type":15,"event":{"exit":{"stat":0}},"process":{"audit_token":{"pid":500},"ppid":1,"executable":{"path":"/usr/bin/myapp"}}}
