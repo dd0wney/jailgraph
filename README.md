@@ -13,9 +13,10 @@ collector backend)**.
 
 ### Collector backends
 
-Two interchangeable backends satisfy the same `Collector` interface:
+Three interchangeable backends satisfy the same `Collector` interface (the
+default is OS-native: `esf` on macOS, `seccomp` on Linux):
 
-- **seccomp** (`--collector seccomp`, default) — seccomp user-notify. Watches a
+- **seccomp** (`--collector seccomp`, default on Linux) — seccomp user-notify. Watches a
   curated set of rare, security-relevant syscalls (never the hot path), so it is
   light but its syscall view is intentionally partial.
 - **eBPF** (`--collector ebpf`, Linux + `CAP_BPF`) — sees the **full** syscall
@@ -35,6 +36,20 @@ Two interchangeable backends satisfy the same `Collector` interface:
   exhaustive (unmapped numbers → `sys_<nr>`, which makes `--enforce` *refuse*
   rather than mis-deny); inside a container run with `--pid=host` so the BPF
   root-namespace tgid matches (on a real host it always matches).
+- **esf** (`--collector esf`, default on macOS) — Apple **Endpoint Security** via
+  the built-in `eslogger` CLI (no system extension or entitlement: eslogger is
+  Apple-signed, so it just needs `sudo`). It captures **EXEC**, **SPAWN** (fork),
+  **OPEN**, and **write/rename/unlink** (the ransomware `FileActivity` signal),
+  reconstructing the target's process subtree in userspace from eslogger's
+  system-wide stream. eslogger is run under a **pty** (so its JSON line-buffers)
+  and the target is dropped back to the invoking user (observer root, subject
+  unprivileged). **Prerequisites:** run under `sudo`, and grant your terminal
+  **Full Disk Access** (System Settings → Privacy & Security) so ES delivers file
+  events. **Limits (honest):** macOS runs are `coverage=partial` — there is no
+  full syscall set, so **no profile generation** on a Mac (`detect`/`audit` work,
+  `profile` does not); and ES `write` events carry **no byte count**, so
+  `FileActivity.Bytes` is always 0 (the detector grades on write-spread + churn
+  instead — see below). No syscalls/capabilities/namespaces (Linux concepts).
 
 ## How it works
 
@@ -86,6 +101,10 @@ jailgraph learn --replay testdata/events.json --api-key "$KEY"
 
 # Full syscall coverage via eBPF (Linux + CAP_BPF; --collector ebpf).
 jailgraph learn --collector ebpf -- /usr/bin/myapp
+
+# macOS: capture via Endpoint Security (eslogger). Needs sudo + Full Disk Access.
+# (esf is the default --collector on macOS, shown here for clarity.)
+sudo jailgraph learn --collector esf -- /usr/bin/myapp
 
 # Generate sandbox profiles from a learned run (prints the run id on completion).
 jailgraph profile --run <run-id> --format both --out ./myapp
@@ -140,9 +159,13 @@ Read this before trusting a result:
   ransomware from any other mass-rewrite workload — **backups, compilers,
   archivers (`tar`), and package managers all trip it**. Every report says so. It
   is a *signal*, not a verdict, and emits no single "score".
-- **Needs the eBPF backend.** Write/rename/unlink capture is eBPF-only; a seccomp
-  or `--replay` run records no writes, so detection on it is reported
-  **inconclusive** (re-run with `--collector ebpf`), never a false "clean".
+- **Needs a write-capturing backend.** Write/rename/unlink capture comes from the
+  **eBPF** backend (Linux) or the **esf** backend (macOS); a seccomp or `--replay`
+  run records no writes, so detection on it is reported **inconclusive** (re-run
+  with `--collector ebpf` or `--collector esf`), never a false "clean". On macOS
+  the report has no byte volume (ES exposes none), so the signature is graded on
+  write-spread + extension churn alone — a clear ransomware shape still reaches
+  High/Critical.
 - **Known v1 blind spots** (documented, not silent): `vfs_writev` and `mmap`
   writes are not captured; inode keying is `(inode)` not `(dev, inode)`, fine for
   a single host-run; rename/unlink attribution is by basename (the run-level churn

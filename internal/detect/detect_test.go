@@ -34,9 +34,14 @@ func faNode(runID, path string, writes, bytes, renames, unlinks float64) *graphd
 }
 
 func runNode(runID, coverage string, lossy bool) *graphdb.NodeResponse {
+	// An eBPF ("full") run has write capture; a "partial" seed here models the
+	// no-write-capture case (the macOS write-capture case is built explicitly).
 	return &graphdb.NodeResponse{
-		Labels:     []string{model.LabelRun},
-		Properties: map[string]any{"id": runID, "target": "/bin/x", "coverage": coverage, "lossy": lossy},
+		Labels: []string{model.LabelRun},
+		Properties: map[string]any{
+			"id": runID, "target": "/bin/x", "coverage": coverage, "lossy": lossy,
+			"write_capture": coverage == "full",
+		},
 	}
 }
 
@@ -100,11 +105,38 @@ func TestAnalyze_BenignFullRunIsCleanButDisclosed(t *testing.T) {
 }
 
 func TestAnalyze_PartialCoverageIsInconclusive(t *testing.T) {
-	// A seccomp/replay run has no FileActivity nodes — detection can't run.
+	// A seccomp/replay run has neither write capture nor FileActivity — detection
+	// can't run. (runNode gives a "partial" run write_capture=false.)
 	s, _ := Collect(context.Background(), seed("r1", "partial", false), "r1", 500)
 	r := Analyze(s)
 	out := r.RenderText()
 	if !strings.Contains(out, "eBPF") || !strings.Contains(out, "inconclusive") {
-		t.Errorf("partial-coverage run must say detection is inconclusive without eBPF:\n%s", out)
+		t.Errorf("no-write-capture run must say detection is inconclusive:\n%s", out)
+	}
+}
+
+func TestAnalyze_MacOSWriteCaptureNoBytesReachesHigh(t *testing.T) {
+	// macOS: PARTIAL coverage (no full syscall set) BUT write capture, with
+	// Bytes=0 (ES exposes no write size). Many files + churn must still reach High
+	// via the 2-axis (bytes-adaptive) grading — detection gates on write-capture,
+	// not on full coverage.
+	mac := &graphdb.NodeResponse{Labels: []string{model.LabelRun}, Properties: map[string]any{
+		"id": "mac", "target": "/bin/x", "coverage": "partial", "write_capture": true, "lossy": false,
+	}}
+	g := &fakeGraph{byLabel: map[string][]*graphdb.NodeResponse{model.LabelRun: {mac}}}
+	var fa []*graphdb.NodeResponse
+	for i := 0; i < TFiles+5; i++ {
+		// bytes = 0 (macOS); each file written once and renamed once (churn).
+		fa = append(fa, faNode("mac", "/f"+string(rune('a'+i%26))+string(rune('0'+i/26)), 2, 0, 1, 0))
+	}
+	g.byLabel[model.LabelFileActivity] = fa
+
+	s, _ := Collect(context.Background(), g, "mac", 500)
+	if !s.WriteCapture {
+		t.Fatal("write_capture not read from the Run node")
+	}
+	r := Analyze(s)
+	if !r.HasHighOrAbove() {
+		t.Errorf("macOS partial+write-capture mass write+churn (bytes=0) should reach >=High:\n%s", r.RenderText())
 	}
 }

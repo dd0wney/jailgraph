@@ -225,7 +225,7 @@ func TestRunLearn_ReplayEndToEnd(t *testing.T) {
 
 func TestRunProfile_FirejailToFile(t *testing.T) {
 	f := newFakeGraph()
-	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{node(1, model.LabelRun, map[string]any{"id": "r1", "coverage": "full"})}
+	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{node(1, model.LabelRun, map[string]any{"id": "r1", "coverage": "full", "write_capture": true})}
 	f.byLabel[model.LabelProcess] = []*graphdb.NodeResponse{node(10, model.LabelProcess, map[string]any{model.PropKey: model.ProcessKey("r1", 10)})}
 	f.byNode[10] = []*graphdb.NodeResponse{
 		node(20, model.LabelSyscall, map[string]any{"name": "openat"}),
@@ -386,7 +386,7 @@ func TestRunDetect_RansomwareSignatureExitsOne(t *testing.T) {
 	detect.TFiles, detect.TChurn, detect.TBytes = 2, 1, 1
 
 	f := newFakeGraph()
-	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{node(1, model.LabelRun, map[string]any{"id": "r1", "coverage": "full"})}
+	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{node(1, model.LabelRun, map[string]any{"id": "r1", "coverage": "full", "write_capture": true})}
 	f.byLabel[model.LabelFileActivity] = []*graphdb.NodeResponse{
 		faNodeCLI("r1", "/a", 3, 100, 1, 1),
 		faNodeCLI("r1", "/b", 3, 100, 1, 1),
@@ -401,7 +401,7 @@ func TestRunDetect_RansomwareSignatureExitsOne(t *testing.T) {
 
 func TestRunDetect_BenignExitsZero(t *testing.T) {
 	f := newFakeGraph()
-	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{node(1, model.LabelRun, map[string]any{"id": "r1", "coverage": "full"})}
+	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{node(1, model.LabelRun, map[string]any{"id": "r1", "coverage": "full", "write_capture": true})}
 	f.byLabel[model.LabelFileActivity] = []*graphdb.NodeResponse{faNodeCLI("r1", "/tmp/x", 1, 10, 0, 0)}
 	withFakeGraph(t, f)
 	if err := runDetect([]string{"--run", "r1", "--api-key", "x"}); err != nil {
