@@ -29,6 +29,7 @@ import (
 	"github.com/dd0wney/jailgraph/internal/collector"
 	"github.com/dd0wney/jailgraph/internal/ebpf"
 	"github.com/dd0wney/jailgraph/internal/graphdb"
+	"github.com/dd0wney/jailgraph/internal/harden"
 	"github.com/dd0wney/jailgraph/internal/ingest"
 	"github.com/dd0wney/jailgraph/internal/profile"
 	"github.com/dd0wney/jailgraph/internal/run"
@@ -57,6 +58,8 @@ func main() {
 		err = runProfile(os.Args[2:])
 	case "audit":
 		err = runAudit(os.Args[2:])
+	case "report":
+		err = runReport(os.Args[2:])
 	default:
 		usage()
 	}
@@ -117,6 +120,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  jailgraph learn [flags] -- <target> [args...]")
 	fmt.Fprintln(os.Stderr, "  jailgraph profile --run <id> [--format firejail|seccomp|both] [--out <path>] [--force]")
 	fmt.Fprintln(os.Stderr, "  jailgraph audit --baseline <id[,id...]> --against <id> [--mode security|reproducibility] [--json] [--force]")
+	fmt.Fprintln(os.Stderr, "  jailgraph report --run <id[,id...]> [--json] [--force]")
 	os.Exit(2)
 }
 
@@ -188,6 +192,71 @@ func runAudit(argv []string) error {
 	}
 
 	if report.DriftDetected(mode) {
+		return &exitErr{1, ""} // report already printed
+	}
+	return nil
+}
+
+// runReport generates an evidence-based hardening report for one program from
+// one or more (unioned) runs. A hardening report describes a single program, so
+// there is nothing to diff against — runs are unioned to widen the evidence
+// (FullCoverage is AND-ed, so eBPF∪seccomp is honestly partial). Exit codes
+// mirror audit: 0 = no finding at/above High, 1 = High/Critical present (report
+// already printed), 2 = could not run (missing run, lossy without --force, or
+// bad flags).
+func runReport(argv []string) error {
+	fs := flag.NewFlagSet("report", flag.ContinueOnError)
+	var (
+		graphURL = fs.String("graphdb-url", envOr("JAILGRAPH_GRAPHDB_URL", "http://localhost:8080"), "graphdb base URL")
+		apiKey   = fs.String("api-key", os.Getenv("JAILGRAPH_API_KEY"), "graphdb API key (X-API-Key)")
+		runCSV   = fs.String("run", "", "run id(s) to report on; comma-separated runs are unioned (required)")
+		jsonOut  = fs.Bool("json", false, "emit the report as JSON")
+		force    = fs.Bool("force", false, "report even from a lossy (incomplete) trace")
+	)
+	if err := fs.Parse(argv); err != nil {
+		return err
+	}
+	ids := splitCSV(*runCSV)
+	if len(ids) == 0 {
+		return &exitErr{2, "--run is required"}
+	}
+
+	client := newGraphClient(*graphURL, *apiKey)
+	ctx := context.Background()
+
+	collect := func(id string) (profile.Behavior, error) {
+		b, err := profile.Collect(ctx, client, id, 500)
+		if err != nil {
+			return b, &exitErr{2, err.Error()}
+		}
+		if b.Lossy && !*force {
+			return b, &exitErr{2, fmt.Sprintf("run %s was lossy; report is degraded. Re-run with --force to override", id)}
+		}
+		return b, nil
+	}
+
+	var behaviors []profile.Behavior
+	for _, id := range ids {
+		b, err := collect(id)
+		if err != nil {
+			return err
+		}
+		behaviors = append(behaviors, b)
+	}
+
+	report := harden.Analyze(profile.Union(strings.Join(ids, ","), behaviors...))
+
+	if *jsonOut {
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+	} else {
+		fmt.Print(report.RenderText())
+	}
+
+	if report.HasHighOrAbove() {
 		return &exitErr{1, ""} // report already printed
 	}
 	return nil

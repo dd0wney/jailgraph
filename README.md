@@ -87,6 +87,10 @@ jailgraph profile --run <run-id> --format both --out ./myapp
 # Audit a candidate run for drift against a trusted (unioned) baseline.
 # Exit codes: 0 = no drift, 1 = drift detected, 2 = could not audit.
 jailgraph audit --baseline <run1>,<run2> --against <run3> --mode security
+
+# Hardening report: evidence-based, severity-ranked findings for one program.
+# Exit codes: 0 = nothing >= High, 1 = a High/Critical finding, 2 = could not run.
+jailgraph report --run <run1>,<run2>
 ```
 
 ### Drift audit (`jailgraph audit`)
@@ -110,6 +114,29 @@ between runs of the same derivation. Note: reproducibility mode is impurity-
 deterministic output, not deterministic traces. Strong impurity signals like
 network access or undeclared-input reads need the (later) eBPF backend. Lossy
 runs are refused unless `--force`.
+
+### Hardening report (`jailgraph report`)
+
+Turns one program's observed behavior (one run, or several `--run a,b` unioned to
+widen the evidence) into a Lynis-style hardening report: ranked, severity-tagged
+findings, each citing what was **observed**. Evidence-based, not rule-based.
+
+Honesty about coverage is the report's hardest constraint. The seccomp backend
+cannot observe capabilities or namespaces, so those findings are gated on full
+(eBPF) coverage; on a partial run the report **says so explicitly** rather than
+going silent — silence would read as "clean", a false absence. For the same
+reason it emits **no single hardening score**: a number computed over findings
+would rank a seccomp run *higher* than an eBPF run of the same program purely
+because it saw less. Output is ranked findings + a per-severity summary under a
+coverage label. Findings cover held capabilities (eBPF), namespace creation
+(eBPF), dangerous syscalls observed, sensitive-file access, and how much the
+matching seccomp profile would deny.
+
+Exit codes (for CI): **0** = nothing at/above High, **1** = a High/Critical
+finding (report still printed), **2** = could not run (missing run, or a lossy
+trace without `--force`). Note that a clean **seccomp** run exits 0 while flagging
+that capabilities/namespaces were unobservable — a green seccomp report has not
+checked them; re-run with `--collector ebpf` for those.
 
 ### Profile strength (read this before trusting a generated profile)
 
