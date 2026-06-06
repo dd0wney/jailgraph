@@ -1,5 +1,11 @@
 # Session handoff — 2026-06-06 03:52 UTC
 
+> **RESOLVED 2026-06-06**: the in-flight amd64 stór convergence run below was
+> executed and **PASSED** (kernel 7.0, native; 68 syscalls, 3 binaries, no
+> structural drift; stór `70c6231` runtime-confirmed). See `NEXT_SESSION_PROMPT.md`
+> and the README "stór reproducibility convergence" section. The rest of this doc
+> is the pre-run record, kept as history.
+
 **Date**: 2026-06-06 (single session; tail-end work was the stór convergence cross-arch validation)
 **Outgoing model**: Claude Opus 4.8 (1M context)
 **Repo**: `github.com/dd0wney/jailgraph` (this handoff lives in jailgraph, not graphdb — all this session's work was here; another agent owns graphdb)
