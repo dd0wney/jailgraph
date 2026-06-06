@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/dd0wney/jailgraph/internal/collector"
 	"github.com/dd0wney/jailgraph/internal/detect"
 	"github.com/dd0wney/jailgraph/internal/ebpf"
+	"github.com/dd0wney/jailgraph/internal/esf"
 	"github.com/dd0wney/jailgraph/internal/graphdb"
 	"github.com/dd0wney/jailgraph/internal/ingest"
 	"github.com/dd0wney/jailgraph/internal/profile"
@@ -252,7 +254,7 @@ func runLearn(argv []string) error {
 		bufSize    = fs.Int("buffer", 8192, "capture ring-buffer capacity")
 		batchSize  = fs.Int("batch", ingest.DefaultBatchSize, "graphdb batch size (max 1000)")
 		replay     = fs.String("replay", "", "replay recorded BehaviorEvents from a JSON file instead of tracing")
-		collectorK = fs.String("collector", "seccomp", "capture backend: seccomp | ebpf (Linux only)")
+		collectorK = fs.String("collector", defaultCollector(), "capture backend: seccomp | ebpf (Linux) | esf (macOS)")
 	)
 	// Split flags from the target command at "--".
 	flagArgs, target, targetArgs := splitArgs(argv)
@@ -455,9 +457,21 @@ func buildCollector(replay, kind, target string, targetArgs []string) (collector
 	case "ebpf":
 		coll, err := ebpf.NewCollector(target, targetArgs, ebpf.Config{})
 		return coll, target, err
+	case "esf":
+		coll, err := esf.NewCollector(target, targetArgs, esf.Config{})
+		return coll, target, err
 	default:
-		return nil, "", fmt.Errorf("unknown --collector %q (want seccomp|ebpf)", kind)
+		return nil, "", fmt.Errorf("unknown --collector %q (want seccomp|ebpf|esf)", kind)
 	}
+}
+
+// defaultCollector picks the OS-native capture backend: eslogger on macOS,
+// seccomp on Linux. (Both eBPF and seccomp are Linux-only; esf is macOS-only.)
+func defaultCollector() string {
+	if runtime.GOOS == "darwin" {
+		return "esf"
+	}
+	return "seccomp"
 }
 
 func loadFixture(path string) ([]collector.BehaviorEvent, error) {
