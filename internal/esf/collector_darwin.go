@@ -53,8 +53,8 @@ type esfCollector struct {
 	cmd      *exec.Cmd
 	tr       *tracker
 
-	out      chan collector.BehaviorEvent
-	errs     chan error
+	out       chan collector.BehaviorEvent
+	errs      chan error
 	childDone chan struct{}
 	scanDone  chan struct{}
 	once      sync.Once

@@ -128,12 +128,13 @@ func (w *Worker) createRunNode(ctx context.Context, sess *run.Session) error {
 		coverage = run.CoveragePartial // safe default
 	}
 	props := map[string]any{
-		"id":          sess.ID,
-		"target":      sess.Target,
-		"started_at":  sess.StartedAt.UTC().Format(time.RFC3339Nano),
-		"lossy":       sess.Lossy,
-		"coverage":    coverage,
-		model.PropKey: key,
+		"id":            sess.ID,
+		"target":        sess.Target,
+		"started_at":    sess.StartedAt.UTC().Format(time.RFC3339Nano),
+		"lossy":         sess.Lossy,
+		"coverage":      coverage,
+		"write_capture": sess.WriteCapture,
+		model.PropKey:   key,
 	}
 	if !sess.EndedAt.IsZero() {
 		props["ended_at"] = sess.EndedAt.UTC().Format(time.RFC3339Nano)

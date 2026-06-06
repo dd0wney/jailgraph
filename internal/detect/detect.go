@@ -64,11 +64,12 @@ type FileActivity struct {
 
 // RunSummary is the detector's input: one run's coverage state + file activity.
 type RunSummary struct {
-	RunID    string         `json:"run_id"`
-	Target   string         `json:"target"`
-	Coverage string         `json:"coverage"`
-	Lossy    bool           `json:"lossy"`
-	Files    []FileActivity `json:"files"`
+	RunID        string         `json:"run_id"`
+	Target       string         `json:"target"`
+	Coverage     string         `json:"coverage"`
+	WriteCapture bool           `json:"write_capture"`
+	Lossy        bool           `json:"lossy"`
+	Files        []FileActivity `json:"files"`
 }
 
 // Finding is one detector observation.
@@ -111,10 +112,15 @@ func Collect(ctx context.Context, client GraphClient, runID string, pageLimit in
 			found = true
 			s.Target, _ = r.Properties["target"].(string)
 			s.Lossy, _ = r.Properties["lossy"].(bool)
-			if cov, _ := r.Properties["coverage"].(string); cov == "full" {
+			s.WriteCapture, _ = r.Properties["write_capture"].(bool)
+			cov, _ := r.Properties["coverage"].(string)
+			switch {
+			case cov == "full":
 				s.Coverage = "full (eBPF)"
-			} else {
-				s.Coverage = "partial (seccomp/replay)"
+			case s.WriteCapture:
+				s.Coverage = "partial (file-write capture)"
+			default:
+				s.Coverage = "partial (no file-write capture)"
 			}
 			break
 		}
@@ -174,11 +180,14 @@ func Analyze(s RunSummary) Report {
 		"v1 detects bulk-rewrite shape, not encryption; entropy is deferred to phase 2",
 		"treat as a signal, not proof — backups, compilers, archivers, and package managers trip it too")
 
-	// Detection requires eBPF write capture; a seccomp/replay run sees no writes.
-	if !strings.HasPrefix(s.Coverage, "full") {
+	// Detection requires file-write capture — the eBPF backend (Linux) or the
+	// eslogger backend (macOS). A seccomp/replay run sees no writes, so we cannot
+	// conclude (gating on write-capture, NOT on full syscall coverage: a macOS
+	// run is "partial" coverage yet captures writes).
+	if !s.WriteCapture {
 		add("coverage", SevInfo, "detection inconclusive — no file-write capture on this backend",
-			"the eBPF backend is required to observe writes/renames/unlinks; this run is "+s.Coverage,
-			"re-run with --collector ebpf to enable ransomware detection")
+			"observing writes/renames/unlinks needs the eBPF backend (Linux) or eslogger (macOS); this run has neither",
+			"re-run with --collector ebpf (Linux) or --collector esf (macOS)")
 		finalize(&r)
 		return r
 	}
@@ -198,28 +207,50 @@ func Analyze(s RunSummary) Report {
 		churn += f.RenameCount + f.UnlinkCount
 		bytes += f.Bytes
 	}
-
 	hitFiles := distinct >= TFiles
 	hitChurn := churn >= TChurn
-	hitBytes := bytes >= TBytes
-	hits := b2i(hitFiles) + b2i(hitChurn) + b2i(hitBytes)
-	strong := distinct >= 2*TFiles && churn >= 2*TChurn && bytes >= 2*TBytes
 
-	ev := fmt.Sprintf("%d distinct files written, %d renames+unlinks, %d bytes (thresholds: %d / %d / %d)",
-		distinct, churn, bytes, TFiles, TChurn, TBytes)
-	switch {
-	case hitFiles && hitChurn && hitBytes && strong:
-		add("ransomware", SevCritical, "strong bulk-rewrite + churn signature", ev,
-			"isolate and investigate: this matches mass-encryption behavior on every structural axis")
-	case hitFiles && hitChurn && hitBytes:
-		add("ransomware", SevHigh, "bulk-rewrite + extension-churn signature", ev,
-			"investigate: write-spread, churn, and volume all exceed thresholds")
-	case hits >= 2:
-		add("ransomware", SevMedium, "partial bulk-rewrite signature", ev,
-			"review: some but not all structural axes exceed thresholds")
-	default:
-		add("ransomware", SevInfo, "no bulk-rewrite signature", ev,
-			"no action: file activity is below the structural thresholds")
+	// Bytes-adaptive: the eBPF backend reports write volume (3-axis signature);
+	// macOS ES exposes no write size, so when there is no byte data we grade on
+	// the two observable axes (write-spread + churn) — a clear ransomware shape
+	// still reaches High/Critical on a Mac.
+	if bytes > 0 {
+		hitBytes := bytes >= TBytes
+		strong := distinct >= 2*TFiles && churn >= 2*TChurn && bytes >= 2*TBytes
+		ev := fmt.Sprintf("%d distinct files written, %d renames+unlinks, %d bytes (thresholds: %d / %d / %d)",
+			distinct, churn, bytes, TFiles, TChurn, TBytes)
+		switch {
+		case hitFiles && hitChurn && hitBytes && strong:
+			add("ransomware", SevCritical, "strong bulk-rewrite + churn signature", ev,
+				"isolate and investigate: matches mass-encryption behavior on every structural axis")
+		case hitFiles && hitChurn && hitBytes:
+			add("ransomware", SevHigh, "bulk-rewrite + extension-churn signature", ev,
+				"investigate: write-spread, churn, and volume all exceed thresholds")
+		case b2i(hitFiles)+b2i(hitChurn)+b2i(hitBytes) >= 2:
+			add("ransomware", SevMedium, "partial bulk-rewrite signature", ev,
+				"review: some but not all structural axes exceed thresholds")
+		default:
+			add("ransomware", SevInfo, "no bulk-rewrite signature", ev,
+				"no action: file activity is below the structural thresholds")
+		}
+	} else {
+		strong := distinct >= 2*TFiles && churn >= 2*TChurn
+		ev := fmt.Sprintf("%d distinct files written, %d renames+unlinks, no byte volume on this backend (thresholds: %d files / %d churn)",
+			distinct, churn, TFiles, TChurn)
+		switch {
+		case hitFiles && hitChurn && strong:
+			add("ransomware", SevCritical, "strong bulk-rewrite + churn signature", ev,
+				"isolate and investigate: write-spread and churn both far exceed thresholds")
+		case hitFiles && hitChurn:
+			add("ransomware", SevHigh, "bulk-rewrite + extension-churn signature", ev,
+				"investigate: write-spread and churn both exceed thresholds (byte volume not observable on this backend)")
+		case hitFiles || hitChurn:
+			add("ransomware", SevMedium, "partial bulk-rewrite signature", ev,
+				"review: one of write-spread / churn exceeds its threshold")
+		default:
+			add("ransomware", SevInfo, "no bulk-rewrite signature", ev,
+				"no action: file activity is below the structural thresholds")
+		}
 	}
 
 	finalize(&r)

@@ -23,6 +23,13 @@ type Session struct {
 	// whether a least-privilege (default-deny) profile can be generated from
 	// this run. Empty is treated as "partial" (the safe default).
 	Coverage string
+	// WriteCapture records whether the collector observed file WRITES (and
+	// rename/unlink) — the signal the ransomware detector needs. Distinct from
+	// Coverage: the eBPF backend has both full syscall coverage AND write
+	// capture; the macOS (eslogger) backend has write capture while remaining
+	// "partial" coverage (no full syscall set, hence no profile generation); the
+	// seccomp backend has neither.
+	WriteCapture bool
 	// Dropped maps a human-readable event-kind name to the number of events of
 	// that kind the buffer dropped.
 	Dropped map[string]int64

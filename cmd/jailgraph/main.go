@@ -283,6 +283,11 @@ func runLearn(argv []string) error {
 	} else {
 		sess.Coverage = run.CoveragePartial
 	}
+	// The eBPF and macOS (eslogger) backends capture file writes/renames/unlinks
+	// — the signal the ransomware detector needs. seccomp and replay do not.
+	if *replay == "" && (*collectorK == "ebpf" || *collectorK == "esf") {
+		sess.WriteCapture = true
+	}
 	builder := aggregate.New(sess.ID)
 	ring := buffer.New(*bufSize)
 
