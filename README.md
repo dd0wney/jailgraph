@@ -63,10 +63,16 @@ target program
 
 ## Behavior-graph schema
 
-Nodes: `Run`, `Process`, `Binary`, `Syscall`, `File`, `Capability`, `Namespace`.
-Edges: `PART_OF`, `SPAWNED`, `EXEC`, `INVOKED` (with count), `OPENED` (with mode),
-`HELD_CAP`, `JOINED_NS`. Shared nodes (`Binary`/`Syscall`/`File`/...) are
-content-keyed and reused across runs; `Process`/`Run` are per-run.
+Nodes: `Run`, `Process`, `Binary`, `Syscall`, `File`, `Capability`, `Namespace`,
+`FileActivity`. Edges: `PART_OF`, `SPAWNED`, `EXEC`, `INVOKED` (with count),
+`OPENED` (with mode), `HELD_CAP`, `JOINED_NS`. Shared nodes
+(`Binary`/`Syscall`/`File`/...) are content-keyed and reused across runs;
+`Process`/`Run`/`FileActivity` are per-run.
+
+`FileActivity` (eBPF backend only) is a per-run, per-file summary of write/rename/
+unlink activity — `{write_count, bytes, rename_count, unlink_count}` — the signal
+the ransomware detector consumes. It's stored as node properties (not edge
+properties) so an analyzer can read it back over the existing node-read path.
 
 ## Usage
 
@@ -87,6 +93,10 @@ jailgraph profile --run <run-id> --format both --out ./myapp
 # Audit a candidate run for drift against a trusted (unioned) baseline.
 # Exit codes: 0 = no drift, 1 = drift detected, 2 = could not audit.
 jailgraph audit --baseline <run1>,<run2> --against <run3> --mode security
+
+# Detect ransomware-like behaviour in an eBPF-traced run (structural, v1).
+# Exit codes: 0 = no signature >= High, 1 = signature found, 2 = could not run.
+jailgraph detect --run <run-id>
 ```
 
 ### Drift audit (`jailgraph audit`)
@@ -110,6 +120,34 @@ between runs of the same derivation. Note: reproducibility mode is impurity-
 deterministic output, not deterministic traces. Strong impurity signals like
 network access or undeclared-input reads need the (later) eBPF backend. Lossy
 runs are refused unless `--force`.
+
+### Ransomware detection (`jailgraph detect`)
+
+An offline, **structural** ransomware detector over an eBPF-traced run's
+`FileActivity`. The signature is behavioural, not content-based: a run that
+**writes across many distinct files**, **churns extensions** (renames + unlinks),
+and **moves real volume** looks like bulk encryption. Severity escalates when the
+distinct-files / churn / bytes counts cross tunable thresholds.
+
+Read this before trusting a result:
+
+- **Structural, not entropy-based (v1).** It detects bulk-rewrite *shape*, not
+  encrypted *content* (entropy is deferred to phase 2). So it cannot distinguish
+  ransomware from any other mass-rewrite workload — **backups, compilers,
+  archivers (`tar`), and package managers all trip it**. Every report says so. It
+  is a *signal*, not a verdict, and emits no single "score".
+- **Needs the eBPF backend.** Write/rename/unlink capture is eBPF-only; a seccomp
+  or `--replay` run records no writes, so detection on it is reported
+  **inconclusive** (re-run with `--collector ebpf`), never a false "clean".
+- **Known v1 blind spots** (documented, not silent): `vfs_writev` and `mmap`
+  writes are not captured; inode keying is `(inode)` not `(dev, inode)`, fine for
+  a single host-run; rename/unlink attribution is by basename (the run-level churn
+  sum is what drives the verdict, so this is sufficient).
+
+Exit codes: `0` = no signature at/above High, `1` = a High/Critical signature
+(report still printed), `2` = could not run (missing run, or lossy without
+`--force`). The `0` on an inconclusive seccomp run means "nothing detected with
+what this backend can see", not "clean".
 
 ### Profile strength (read this before trusting a generated profile)
 
