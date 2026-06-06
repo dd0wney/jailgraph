@@ -211,9 +211,17 @@ jailgraph audit --baseline <runA> --against <runB> --mode reproducibility
 ```
 
 A deterministic build produces no stable-dimension (syscall/binary) drift; drift
-there is an impurity signal. Validated end-to-end: `make stor-convergence`
-(needs Docker + sibling repos `../stor-core` and `../graphdb`) traces a real stór
-sandboxed build twice and confirms the reproducibility audit clears it.
+there is an impurity signal. Validated end-to-end on both Linux architectures:
+
+- **linux/arm64** (Docker): `make stor-convergence` (needs Docker + sibling repos
+  `../stor-core` and `../graphdb`) traces a real stór sandboxed build twice and
+  confirms the reproducibility audit clears it.
+- **linux/amd64** (native — Fedora kernel 7.0, BTF present): the same hardened
+  `TestStor_ReproducibilityConvergence`, run privileged against a natively-built
+  stór, confirms convergence — 68 distinct syscalls, 3 binaries, no structural
+  drift (only the tolerated hot-path scheduler noise `+tgkill`/`-sched_yield`). The test
+  skips rather than passes if either build fails, so the PASS attests two genuine,
+  structurally-identical builds — not a hollow result over a shared failure.
 
 ## License
 
