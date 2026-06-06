@@ -107,7 +107,8 @@ func TestToInt(t *testing.T) {
 		in   any
 		want int
 	}{
-		{5, 5}, {int32(7), 7}, {int64(9), 9}, {"x", 0}, {nil, 0}, {true, 0},
+		// float64 matters: graphdb returns JSON numbers as float64 on read-back.
+		{5, 5}, {int32(7), 7}, {int64(9), 9}, {float64(11), 11}, {"x", 0}, {nil, 0}, {true, 0},
 	}
 	for _, c := range cases {
 		if got := toInt(c.in); got != c.want {

@@ -27,6 +27,7 @@ import (
 	"github.com/dd0wney/jailgraph/internal/audit"
 	"github.com/dd0wney/jailgraph/internal/buffer"
 	"github.com/dd0wney/jailgraph/internal/collector"
+	"github.com/dd0wney/jailgraph/internal/detect"
 	"github.com/dd0wney/jailgraph/internal/ebpf"
 	"github.com/dd0wney/jailgraph/internal/graphdb"
 	"github.com/dd0wney/jailgraph/internal/harden"
@@ -58,6 +59,8 @@ func main() {
 		err = runProfile(os.Args[2:])
 	case "audit":
 		err = runAudit(os.Args[2:])
+	case "detect":
+		err = runDetect(os.Args[2:])
 	case "report":
 		err = runReport(os.Args[2:])
 	default:
@@ -120,6 +123,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  jailgraph learn [flags] -- <target> [args...]")
 	fmt.Fprintln(os.Stderr, "  jailgraph profile --run <id> [--format firejail|seccomp|both] [--out <path>] [--force]")
 	fmt.Fprintln(os.Stderr, "  jailgraph audit --baseline <id[,id...]> --against <id> [--mode security|reproducibility] [--json] [--force]")
+	fmt.Fprintln(os.Stderr, "  jailgraph detect --run <id> [--json] [--force]")
 	fmt.Fprintln(os.Stderr, "  jailgraph report --run <id[,id...]> [--json] [--force]")
 	os.Exit(2)
 }
@@ -197,6 +201,52 @@ func runAudit(argv []string) error {
 	return nil
 }
 
+// runDetect runs the offline structural ransomware analyzer over one run's
+// file-activity. Exit codes mirror audit: 0 = no High/Critical detection, 1 =
+// ransomware signature found (report already printed), 2 = could not run (missing
+// run, lossy without --force, bad flags). Detection needs a write-capturing
+// backend (eBPF on Linux, esf on macOS); otherwise the report says so.
+func runDetect(argv []string) error {
+	fs := flag.NewFlagSet("detect", flag.ContinueOnError)
+	var (
+		graphURL = fs.String("graphdb-url", envOr("JAILGRAPH_GRAPHDB_URL", "http://localhost:8080"), "graphdb base URL")
+		apiKey   = fs.String("api-key", os.Getenv("JAILGRAPH_API_KEY"), "graphdb API key (X-API-Key)")
+		runID    = fs.String("run", "", "run id to analyze for ransomware signals (required)")
+		jsonOut  = fs.Bool("json", false, "emit the report as JSON")
+		force    = fs.Bool("force", false, "analyze even if the run was lossy")
+	)
+	if err := fs.Parse(argv); err != nil {
+		return err
+	}
+	if *runID == "" {
+		return &exitErr{2, "--run is required"}
+	}
+
+	client := newGraphClient(*graphURL, *apiKey)
+	summary, err := detect.Collect(context.Background(), client, *runID, 500)
+	if err != nil {
+		return &exitErr{2, err.Error()}
+	}
+	if summary.Lossy && !*force {
+		return &exitErr{2, fmt.Sprintf("run %s was lossy; detection is degraded. Re-run with --force to override", *runID)}
+	}
+
+	report := detect.Analyze(summary)
+	if *jsonOut {
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+	} else {
+		fmt.Print(report.RenderText())
+	}
+	if report.HasHighOrAbove() {
+		return &exitErr{1, ""} // report already printed
+	}
+	return nil
+}
+
 // runReport generates an evidence-based hardening report for one program from
 // one or more (unioned) runs. A hardening report describes a single program, so
 // there is nothing to diff against — runs are unioned to widen the evidence
@@ -245,7 +295,6 @@ func runReport(argv []string) error {
 	}
 
 	report := harden.Analyze(profile.Union(strings.Join(ids, ","), behaviors...))
-
 	if *jsonOut {
 		data, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
@@ -255,7 +304,6 @@ func runReport(argv []string) error {
 	} else {
 		fmt.Print(report.RenderText())
 	}
-
 	if report.HasHighOrAbove() {
 		return &exitErr{1, ""} // report already printed
 	}

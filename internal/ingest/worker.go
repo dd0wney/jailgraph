@@ -16,8 +16,9 @@ import (
 const DefaultBatchSize = 1000
 
 // sharedLabels are content-identified node labels shared across runs. The cache
-// is rebuilt from the server for exactly these (Process/Run are per-run and
-// must never be deduplicated against earlier runs).
+// is rebuilt from the server for exactly these (Process/Run/FileActivity are
+// per-run — their keys embed the run id — and must never be deduplicated against
+// earlier runs).
 var sharedLabels = []string{
 	model.LabelBinary, model.LabelSyscall, model.LabelFile,
 	model.LabelCapability, model.LabelNamespace,

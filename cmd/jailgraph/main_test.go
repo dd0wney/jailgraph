@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dd0wney/jailgraph/internal/detect"
 	"github.com/dd0wney/jailgraph/internal/graphdb"
 	"github.com/dd0wney/jailgraph/internal/model"
 )
@@ -370,4 +371,48 @@ func eq(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func faNodeCLI(runID, path string, writes, bytes, renames, unlinks float64) *graphdb.NodeResponse {
+	return node(0, model.LabelFileActivity, map[string]any{
+		model.PropKey: model.FileActivityKey(runID, path), "path": path,
+		"write_count": writes, "bytes": bytes, "rename_count": renames, "unlink_count": unlinks,
+	})
+}
+
+func TestRunDetect_RansomwareSignatureExitsOne(t *testing.T) {
+	// Lower the thresholds so a small fixture trips the structural signature.
+	defer func(f int, c, b int64) { detect.TFiles, detect.TChurn, detect.TBytes = f, c, b }(detect.TFiles, detect.TChurn, detect.TBytes)
+	detect.TFiles, detect.TChurn, detect.TBytes = 2, 1, 1
+
+	f := newFakeGraph()
+	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{node(1, model.LabelRun, map[string]any{"id": "r1", "coverage": "full"})}
+	f.byLabel[model.LabelFileActivity] = []*graphdb.NodeResponse{
+		faNodeCLI("r1", "/a", 3, 100, 1, 1),
+		faNodeCLI("r1", "/b", 3, 100, 1, 1),
+		faNodeCLI("r1", "/c", 3, 100, 1, 1),
+	}
+	withFakeGraph(t, f)
+	err := runDetect([]string{"--run", "r1", "--api-key", "x"})
+	if code, _ := resolveExit(err); code != 1 {
+		t.Errorf("ransomware signature should exit 1, got code %d (err %v)", code, err)
+	}
+}
+
+func TestRunDetect_BenignExitsZero(t *testing.T) {
+	f := newFakeGraph()
+	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{node(1, model.LabelRun, map[string]any{"id": "r1", "coverage": "full"})}
+	f.byLabel[model.LabelFileActivity] = []*graphdb.NodeResponse{faNodeCLI("r1", "/tmp/x", 1, 10, 0, 0)}
+	withFakeGraph(t, f)
+	if err := runDetect([]string{"--run", "r1", "--api-key", "x"}); err != nil {
+		t.Errorf("benign full-coverage run should exit 0 (nil), got %v", err)
+	}
+}
+
+func TestRunDetect_MissingRunExitsTwo(t *testing.T) {
+	withFakeGraph(t, newFakeGraph())
+	err := runDetect([]string{"--api-key", "x"})
+	if code, _ := resolveExit(err); code != 2 {
+		t.Errorf("missing --run should exit 2, got code %d (err %v)", code, err)
+	}
 }

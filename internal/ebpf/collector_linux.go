@@ -35,10 +35,12 @@ import (
 
 // event kinds, mirroring trace.bpf.c.
 const (
-	evSpawn uint32 = 1
-	evExec  uint32 = 2
-	evOpen  uint32 = 3
-	evNS    uint32 = 4
+	evSpawn  uint32 = 1
+	evExec   uint32 = 2
+	evOpen   uint32 = 3
+	evNS     uint32 = 4
+	evRename uint32 = 5
+	evUnlink uint32 = 6
 )
 
 // rawEvent mirrors `struct event` in trace.bpf.c (all fields 4-byte aligned).
@@ -86,6 +88,12 @@ type ebpfCollector struct {
 	ringbufDone chan struct{}
 	once        sync.Once
 	waitErr     error
+
+	// fileAgg folds per-file write/rename/unlink activity. Written only by the
+	// ringbuf goroutine (renames/unlinks) and by finalize (writes, after the
+	// ringbuf goroutine has finished — see the <-ringbufDone barrier), so no lock
+	// is needed.
+	fileAgg map[string]*fileStat
 }
 
 // NewCollector returns an eBPF-backed Collector for target.
@@ -145,6 +153,23 @@ func (c *ebpfCollector) Start(ctx context.Context) (<-chan collector.BehaviorEve
 		return nil, fmt.Errorf("attach ksys_unshare: %w", err)
 	}
 	c.links = append(c.links, unshareLink)
+	// fentry on vfs_write / security_inode_rename / security_inode_unlink: the
+	// ransomware-signal capture (write volume per inode + extension churn).
+	for _, h := range []struct {
+		name string
+		prog *ebpf.Program
+	}{
+		{"vfs_write", c.objs.HandleWrite},
+		{"security_inode_rename", c.objs.HandleRename},
+		{"security_inode_unlink", c.objs.HandleUnlink},
+	} {
+		l, err := link.AttachTracing(link.TracingOptions{Program: h.prog})
+		if err != nil {
+			c.cleanup()
+			return nil, fmt.Errorf("attach %s: %w", h.name, err)
+		}
+		c.links = append(c.links, l)
+	}
 
 	rd, err := ringbuf.NewReader(c.objs.Events)
 	if err != nil {
@@ -165,6 +190,7 @@ func (c *ebpfCollector) Start(ctx context.Context) (<-chan collector.BehaviorEve
 	c.errs = make(chan error, c.cfg.EventBuffer)
 	c.childDone = make(chan struct{})
 	c.ringbufDone = make(chan struct{})
+	c.fileAgg = make(map[string]*fileStat)
 
 	go func() {
 		c.once.Do(func() { c.waitErr = c.cmd.Wait() })
@@ -234,8 +260,29 @@ func (c *ebpfCollector) toBehaviors(ev rawEvent) []collector.BehaviorEvent {
 			}
 		}
 		return out
+	case evRename:
+		c.bumpChurn(cstr(ev.Path[:]), 1, 0)
+		return nil // folded; emitted as EventFileActivity at teardown
+	case evUnlink:
+		c.bumpChurn(cstr(ev.Path[:]), 0, 1)
+		return nil
 	}
 	return nil
+}
+
+// bumpChurn folds a streamed rename/unlink into the per-file aggregate. Called
+// only from the ringbuf goroutine.
+func (c *ebpfCollector) bumpChurn(name string, renames, unlinks int64) {
+	if name == "" {
+		return
+	}
+	st := c.fileAgg[name]
+	if st == nil {
+		st = &fileStat{}
+		c.fileAgg[name] = st
+	}
+	st.renames += renames
+	st.unlinks += unlinks
 }
 
 // cstr converts a NUL-terminated C char array to a Go string.
@@ -293,6 +340,32 @@ func (c *ebpfCollector) finalize(ctx context.Context) {
 	}
 	if err := cit.Err(); err != nil {
 		c.emitErr(fmt.Errorf("iterate seen_caps map: %w", err))
+	}
+
+	// Fold per-inode write volume into the per-path file-activity aggregate,
+	// resolving each inode to the path captured at open-for-write, then emit one
+	// FileActivity event per file. Touching fileAgg here is safe: the ringbuf
+	// goroutine (the only other writer) has finished (<-ringbufDone above).
+	var ino uint64
+	var ws writeStat
+	var pb [256]byte
+	var writes []pathWrite
+	wit := c.objs.WriteStats.Iterate()
+	for wit.Next(&ino, &ws) {
+		path := fmt.Sprintf("inode:%d", ino) // fallback if no open-for-write was seen
+		if err := c.objs.WritePaths.Lookup(&ino, &pb); err == nil {
+			if p := cstr(pb[:]); p != "" {
+				path = p
+			}
+		}
+		writes = append(writes, pathWrite{path: path, stat: ws})
+	}
+	if err := wit.Err(); err != nil {
+		c.emitErr(fmt.Errorf("iterate write_stats map: %w", err))
+	}
+	for _, be := range foldFileActivity(c.fileAgg, writes) {
+		be.Timestamp = time.Now()
+		c.emit(be)
 	}
 }
 

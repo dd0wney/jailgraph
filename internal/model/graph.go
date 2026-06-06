@@ -37,6 +37,12 @@ type Edge struct {
 // (the child PID is not observable at clone-notify time; see the package doc on
 // the collector).
 func EventToGraph(runID string, e collector.BehaviorEvent) ([]Node, []Edge) {
+	// A file-activity summary is a run-level aggregate with no single acting
+	// process, so it bypasses the Process/INVOKED preamble entirely.
+	if e.Kind == collector.EventFileActivity {
+		return fileActivityGraph(runID, e)
+	}
+
 	procKey := ProcessKey(runID, e.PID)
 	nodes := []Node{
 		{
@@ -134,4 +140,28 @@ func EventToGraph(runID string, e collector.BehaviorEvent) ([]Node, []Edge) {
 	}
 
 	return nodes, edges
+}
+
+// fileActivityGraph maps a per-(run, file) write/rename/unlink summary to a single
+// per-run FileActivity node anchored to the Run by PART_OF. The collector folds
+// activity across the process tree before emitting, so exactly one event — and
+// thus one node — exists per (run, path); the aggregator's node dedupe needs no
+// property summation. The property map is flat so entropy (phase 2) is one more
+// key with no rework.
+func fileActivityGraph(runID string, e collector.BehaviorEvent) ([]Node, []Edge) {
+	key := FileActivityKey(runID, e.Path)
+	node := Node{
+		Key:    key,
+		Labels: []string{LabelFileActivity},
+		Properties: map[string]any{
+			"path":         e.Path,
+			"write_count":  e.WriteCount,
+			"bytes":        e.Bytes,
+			"rename_count": e.RenameCount,
+			"unlink_count": e.UnlinkCount,
+			PropKey:        key,
+		},
+	}
+	edges := []Edge{{Type: EdgePartOf, FromKey: key, ToKey: RunKey(runID)}}
+	return []Node{node}, edges
 }

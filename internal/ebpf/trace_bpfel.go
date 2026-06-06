@@ -8,9 +8,21 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type tracePathBuf struct {
+	_    structs.HostLayout
+	Path [256]int8
+}
+
+type traceWriteStat struct {
+	_     structs.HostLayout
+	Count uint64
+	Bytes uint64
+}
 
 // loadTrace returns the embedded CollectionSpec for trace.
 func loadTrace() (*ebpf.CollectionSpec, error) {
@@ -58,19 +70,24 @@ type traceProgramSpecs struct {
 	HandleExec     *ebpf.ProgramSpec `ebpf:"handle_exec"`
 	HandleFork     *ebpf.ProgramSpec `ebpf:"handle_fork"`
 	HandleOpen     *ebpf.ProgramSpec `ebpf:"handle_open"`
+	HandleRename   *ebpf.ProgramSpec `ebpf:"handle_rename"`
 	HandleSysEnter *ebpf.ProgramSpec `ebpf:"handle_sys_enter"`
+	HandleUnlink   *ebpf.ProgramSpec `ebpf:"handle_unlink"`
 	HandleUnshare  *ebpf.ProgramSpec `ebpf:"handle_unshare"`
+	HandleWrite    *ebpf.ProgramSpec `ebpf:"handle_write"`
 }
 
 // traceMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type traceMapSpecs struct {
-	Events   *ebpf.MapSpec `ebpf:"events"`
-	Launcher *ebpf.MapSpec `ebpf:"launcher"`
-	Seen     *ebpf.MapSpec `ebpf:"seen"`
-	SeenCaps *ebpf.MapSpec `ebpf:"seen_caps"`
-	Tracked  *ebpf.MapSpec `ebpf:"tracked"`
+	Events     *ebpf.MapSpec `ebpf:"events"`
+	Launcher   *ebpf.MapSpec `ebpf:"launcher"`
+	Seen       *ebpf.MapSpec `ebpf:"seen"`
+	SeenCaps   *ebpf.MapSpec `ebpf:"seen_caps"`
+	Tracked    *ebpf.MapSpec `ebpf:"tracked"`
+	WritePaths *ebpf.MapSpec `ebpf:"write_paths"`
+	WriteStats *ebpf.MapSpec `ebpf:"write_stats"`
 }
 
 // traceVariableSpecs contains global variables before they are loaded into the kernel.
@@ -99,11 +116,13 @@ func (o *traceObjects) Close() error {
 //
 // It can be passed to loadTraceObjects or ebpf.CollectionSpec.LoadAndAssign.
 type traceMaps struct {
-	Events   *ebpf.Map `ebpf:"events"`
-	Launcher *ebpf.Map `ebpf:"launcher"`
-	Seen     *ebpf.Map `ebpf:"seen"`
-	SeenCaps *ebpf.Map `ebpf:"seen_caps"`
-	Tracked  *ebpf.Map `ebpf:"tracked"`
+	Events     *ebpf.Map `ebpf:"events"`
+	Launcher   *ebpf.Map `ebpf:"launcher"`
+	Seen       *ebpf.Map `ebpf:"seen"`
+	SeenCaps   *ebpf.Map `ebpf:"seen_caps"`
+	Tracked    *ebpf.Map `ebpf:"tracked"`
+	WritePaths *ebpf.Map `ebpf:"write_paths"`
+	WriteStats *ebpf.Map `ebpf:"write_stats"`
 }
 
 func (m *traceMaps) Close() error {
@@ -113,6 +132,8 @@ func (m *traceMaps) Close() error {
 		m.Seen,
 		m.SeenCaps,
 		m.Tracked,
+		m.WritePaths,
+		m.WriteStats,
 	)
 }
 
@@ -130,8 +151,11 @@ type tracePrograms struct {
 	HandleExec     *ebpf.Program `ebpf:"handle_exec"`
 	HandleFork     *ebpf.Program `ebpf:"handle_fork"`
 	HandleOpen     *ebpf.Program `ebpf:"handle_open"`
+	HandleRename   *ebpf.Program `ebpf:"handle_rename"`
 	HandleSysEnter *ebpf.Program `ebpf:"handle_sys_enter"`
+	HandleUnlink   *ebpf.Program `ebpf:"handle_unlink"`
 	HandleUnshare  *ebpf.Program `ebpf:"handle_unshare"`
+	HandleWrite    *ebpf.Program `ebpf:"handle_write"`
 }
 
 func (p *tracePrograms) Close() error {
@@ -140,8 +164,11 @@ func (p *tracePrograms) Close() error {
 		p.HandleExec,
 		p.HandleFork,
 		p.HandleOpen,
+		p.HandleRename,
 		p.HandleSysEnter,
+		p.HandleUnlink,
 		p.HandleUnshare,
+		p.HandleWrite,
 	)
 }
 
