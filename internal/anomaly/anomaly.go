@@ -17,7 +17,49 @@ package anomaly
 import (
 	"fmt"
 	"strings"
+
+	"github.com/dd0wney/jailgraph/internal/profile"
 )
+
+// Analyze scores a candidate run's behaviour against the learned Baseline via the
+// given Scorer. It always leads with a method disclaimer, notes lossy baseline
+// exclusions, then appends the scorer's findings — additive novelty only, sorted
+// worst-first.
+func Analyze(cand profile.Behavior, base Baseline, scorer Scorer) Report {
+	r := Report{RunID: cand.RunID, Target: base.Target, BaselineRuns: base.TotalRuns}
+	add := func(cat string, sev Severity, title, ev, rec string) {
+		r.Findings = append(r.Findings, Finding{cat, sev, title, ev, rec})
+	}
+
+	add("method", SevInfo, "population-novelty heuristic — additive only",
+		fmt.Sprintf("flags behaviour this target never showed across %d prior run(s); novelty is suspicious, not proof", base.TotalRuns),
+		"a novel syscall/binary can be a benign new code path — investigate, don't auto-block")
+	if base.LossyExcluded > 0 {
+		add("coverage", SevInfo, fmt.Sprintf("%d lossy baseline run(s) excluded", base.LossyExcluded),
+			"lossy runs were dropped from the baseline — their absence of an item is not evidence",
+			"re-trace those runs without drops to widen the baseline")
+	}
+
+	r.Findings = append(r.Findings, scorer.Score(base, cand)...)
+	finalize(&r)
+	return r
+}
+
+// finalize sorts findings worst-first (severity desc, then category, then title).
+func finalize(r *Report) {
+	for i := 1; i < len(r.Findings); i++ {
+		for j := i; j > 0; j-- {
+			a, b := r.Findings[j-1], r.Findings[j]
+			less := a.Severity.rank() < b.Severity.rank() ||
+				(a.Severity.rank() == b.Severity.rank() && (a.Category > b.Category ||
+					(a.Category == b.Category && a.Title > b.Title)))
+			if !less {
+				break
+			}
+			r.Findings[j-1], r.Findings[j] = r.Findings[j], r.Findings[j-1]
+		}
+	}
+}
 
 // Severity is anomaly's own enum (no cross-import), so --json stays readable and
 // rank() drives ordering + the exit gate.
