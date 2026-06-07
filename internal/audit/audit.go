@@ -133,9 +133,10 @@ var volatilePrefixes = []string{"/tmp", "/var/tmp", "/run", "/dev/shm", "/proc"}
 // noise without masking meaningful version/arch differences.
 var digitRun = regexp.MustCompile(`[0-9]{6,}`)
 
-// normalizePath buckets volatile paths (their contents are nondeterministic per
-// run) and collapses long digit runs elsewhere.
-func normalizePath(p string) string {
+// NormalizePath buckets volatile paths (their contents are nondeterministic per
+// run) and collapses long digit runs elsewhere. Exported so the anomaly detector
+// reuses the exact file-normalization the drift auditor uses.
+func NormalizePath(p string) string {
 	for _, pre := range volatilePrefixes {
 		if p == pre || strings.HasPrefix(p, pre+"/") {
 			return pre + "/*"
@@ -147,7 +148,7 @@ func normalizePath(p string) string {
 func normalizeSet(paths []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(paths))
 	for _, p := range paths {
-		out[normalizePath(p)] = struct{}{}
+		out[NormalizePath(p)] = struct{}{}
 	}
 	return out
 }
