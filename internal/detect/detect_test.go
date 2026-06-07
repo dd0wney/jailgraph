@@ -140,3 +140,45 @@ func TestAnalyze_MacOSWriteCaptureNoBytesReachesHigh(t *testing.T) {
 		t.Errorf("macOS partial+write-capture mass write+churn (bytes=0) should reach >=High:\n%s", r.RenderText())
 	}
 }
+
+// entropyRun builds a full-coverage (eBPF) run of n written files, each with the
+// given byte size and entropy, plus one rename apiece (churn).
+func entropyRun(n int, bytesEach int64, entropy float64) RunSummary {
+	s := RunSummary{RunID: "r1", Coverage: "full (eBPF)", WriteCapture: true}
+	for i := 0; i < n; i++ {
+		p := "/d/f" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+		s.Files = append(s.Files, FileActivity{Path: p, WriteCount: 1, Bytes: bytesEach, RenameCount: 1, Entropy: entropy})
+	}
+	return s
+}
+
+func TestAnalyze_HighEntropyEscalates(t *testing.T) {
+	// Structural Medium (files+churn cross, bytes tiny) + high entropy → High.
+	r := Analyze(entropyRun(TFiles+5, 1, 7.9))
+	if !r.HasHighOrAbove() {
+		t.Errorf("high-entropy bulk rewrite should escalate to >=High:\n%s", r.RenderText())
+	}
+	if !strings.Contains(r.RenderText(), "consistent with encryption") {
+		t.Errorf("expected encryption-consistent entropy finding:\n%s", r.RenderText())
+	}
+}
+
+func TestAnalyze_LowEntropyDeEscalates(t *testing.T) {
+	// Structural High (all 3 axes cross) but plaintext entropy → de-escalated below High.
+	r := Analyze(entropyRun(TFiles+5, TBytes, 4.0))
+	if r.HasHighOrAbove() {
+		t.Errorf("low-entropy (plaintext) bulk rewrite should de-escalate below High:\n%s", r.RenderText())
+	}
+	if !strings.Contains(r.RenderText(), "plaintext bulk rewrite") {
+		t.Errorf("expected plaintext de-escalation finding:\n%s", r.RenderText())
+	}
+}
+
+func TestAnalyze_EntropyUnsampledNoted(t *testing.T) {
+	// Writes captured but no content sampled (entropy 0) → structural-only note,
+	// and the structural verdict is unchanged (no modifier).
+	r := Analyze(entropyRun(TFiles+5, 1, 0))
+	if !strings.Contains(r.RenderText(), "not sampled") {
+		t.Errorf("expected a 'content not sampled' note when entropy is absent:\n%s", r.RenderText())
+	}
+}
