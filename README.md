@@ -122,6 +122,10 @@ jailgraph detect --run <run-id>
 # Exit codes: 0 = nothing >= High, 1 = a High/Critical combination, 2 = could not run.
 jailgraph malware --run <run-id>
 
+# Score a run against the population of prior runs of the same binary (novelty/LOTL).
+# Exit codes: 0 = nothing novel >= High, 1 = novel behaviour found, 2 = no baseline / could not run.
+jailgraph anomaly --run <run-id>
+
 # Hardening report: evidence-based, severity-ranked findings for one program.
 # Exit codes: 0 = nothing >= High, 1 = a High/Critical finding, 2 = could not run.
 jailgraph report --run <run1>,<run2>
@@ -221,6 +225,42 @@ method disclaimer: legitimate installers and admin tools can trip individual
 categories, so this is a signal to investigate, not a verdict. Exit codes mirror
 `detect` (1 iff a High/Critical combination). The launcher/interpreter and
 persistence/credential path sets are deliberately tight and tunable.
+
+### Behavioural anomaly (`jailgraph anomaly`)
+
+Where `detect`/`malware` match fixed signatures, **`anomaly`** is *population-
+relative*: it learns what's **normal** for a binary across **all its prior runs**
+in the graph, then flags a candidate run's **novelty** — the living-off-the-land
+case, a known-good binary (`bash`, `python`, `curl`) doing something it has never
+done. It generalizes `audit` from pairwise set-difference to a frequency model:
+each observed syscall/binary/file carries a **support** (the share of baseline
+runs it appeared in); an item with support 0 is **novel** (strongest), below a
+small threshold is **rare**.
+
+Honesty is the whole game here:
+- **Verdict = additive novelty only** (like `audit`'s security mode) — a *missing*
+  behaviour never drives it (partial execution/coverage confounds it).
+- **Dimension confidence** mirrors `audit`: a novel **syscall** → High, **binary**
+  → Medium, **file** → Info (reported, never drives — paths are volatile, and are
+  normalized with the auditor's exact `/tmp/*`/digit-collapse rules).
+- **Confidence scales with the baseline** — below a few runs it caps severity and
+  says "low-confidence baseline (only N runs)"; **no single black-box score**,
+  every finding cites its support ("seen in 0/8 runs").
+- **Coverage-mismatch is explicit** — each dimension's denominator counts only
+  baseline runs *coverage-comparable* to the candidate (syscalls/caps across the
+  same backend class; binaries/files across all), so a seccomp candidate's
+  "missing" hot-path syscalls aren't mistaken for an anomaly, and a full-coverage
+  candidate's `read`/`write` aren't "novel" against a seccomp baseline. An
+  uncomparable dimension says "cannot score — no comparable baseline".
+
+Default baseline = all other runs of the candidate's own target (`--baseline-target`
+overrides). Exit codes mirror `detect` (1 iff novelty ≥ High); **no baseline**
+(no other usable same-target runs) → 2. The model is **statistical**, behind a
+pluggable `Scorer` seam — a learned (JEPA-style) scorer can slot in later once
+there are enough runs, reported alongside rather than replacing the explainable
+verdict. **C2/exfil are out of scope** (they need a network capture signal
+jailgraph doesn't have); anomaly works over the existing
+syscall/file/binary/cap/namespace signals — i.e. living-off-the-land.
 
 ### Hardening report (`jailgraph report`)
 
