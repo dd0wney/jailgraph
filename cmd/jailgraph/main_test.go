@@ -450,3 +450,77 @@ func TestRunMalware_MissingRunExitsTwo(t *testing.T) {
 		t.Errorf("missing --run should exit 2, got code %d (err %v)", code, err)
 	}
 }
+
+// seedAnomalyRun appends a run's Run+Process+neighbor graph (for profile.Collect).
+func seedAnomalyRun(f *fakeGraph, runID, target string, full bool, syscalls, binaries []string) {
+	cov := "partial"
+	if full {
+		cov = "full"
+	}
+	f.nextID++
+	f.byLabel[model.LabelRun] = append(f.byLabel[model.LabelRun], &graphdb.NodeResponse{
+		ID: f.nextID, Labels: []string{model.LabelRun},
+		Properties: map[string]any{"id": runID, "target": target, "coverage": cov, "lossy": false},
+	})
+	f.nextID++
+	pid := f.nextID
+	f.byLabel[model.LabelProcess] = append(f.byLabel[model.LabelProcess], &graphdb.NodeResponse{
+		ID: pid, Labels: []string{model.LabelProcess},
+		Properties: map[string]any{model.PropKey: model.ProcessKey(runID, 1), "pid": float64(1)},
+	})
+	var nb []*graphdb.NodeResponse
+	for _, s := range syscalls {
+		f.nextID++
+		nb = append(nb, &graphdb.NodeResponse{ID: f.nextID, Labels: []string{model.LabelSyscall}, Properties: map[string]any{"name": s}})
+	}
+	for _, b := range binaries {
+		f.nextID++
+		nb = append(nb, &graphdb.NodeResponse{ID: f.nextID, Labels: []string{model.LabelBinary}, Properties: map[string]any{"path": b}})
+	}
+	f.byNode[pid] = nb
+}
+
+func TestRunAnomaly_NovelSyscallExitsOne(t *testing.T) {
+	f := newFakeGraph()
+	// 5 prior runs (>= MinConfidentN) establish "read" as normal for /bin/app.
+	for i := 0; i < 5; i++ {
+		seedAnomalyRun(f, "b"+string(rune('0'+i)), "/bin/app", true, []string{"read"}, []string{"/bin/app"})
+	}
+	// Candidate adds a never-before-seen syscall.
+	seedAnomalyRun(f, "cand", "/bin/app", true, []string{"read", "setns"}, []string{"/bin/app"})
+	withFakeGraph(t, f)
+	err := runAnomaly([]string{"--run", "cand", "--api-key", "x"})
+	if code, _ := resolveExit(err); code != 1 {
+		t.Errorf("novel syscall should exit 1, got code %d (err %v)", code, err)
+	}
+}
+
+func TestRunAnomaly_CleanExitsZero(t *testing.T) {
+	f := newFakeGraph()
+	for i := 0; i < 5; i++ {
+		seedAnomalyRun(f, "b"+string(rune('0'+i)), "/bin/app", true, []string{"read", "write"}, []string{"/bin/app"})
+	}
+	seedAnomalyRun(f, "cand", "/bin/app", true, []string{"read"}, []string{"/bin/app"})
+	withFakeGraph(t, f)
+	if err := runAnomaly([]string{"--run", "cand", "--api-key", "x"}); err != nil {
+		t.Errorf("a run whose surface is in-baseline should exit 0 (nil), got %v", err)
+	}
+}
+
+func TestRunAnomaly_NoBaselineExitsTwo(t *testing.T) {
+	f := newFakeGraph()
+	seedAnomalyRun(f, "cand", "/bin/lonely", true, []string{"read"}, nil)
+	withFakeGraph(t, f)
+	err := runAnomaly([]string{"--run", "cand", "--api-key", "x"})
+	if code, _ := resolveExit(err); code != 2 {
+		t.Errorf("no baseline should exit 2, got code %d (err %v)", code, err)
+	}
+}
+
+func TestRunAnomaly_MissingRunExitsTwo(t *testing.T) {
+	withFakeGraph(t, newFakeGraph())
+	err := runAnomaly([]string{"--run", "nope", "--api-key", "x"})
+	if code, _ := resolveExit(err); code != 2 {
+		t.Errorf("missing run should exit 2, got code %d (err %v)", code, err)
+	}
+}

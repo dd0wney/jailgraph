@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/dd0wney/jailgraph/internal/aggregate"
+	"github.com/dd0wney/jailgraph/internal/anomaly"
 	"github.com/dd0wney/jailgraph/internal/audit"
 	"github.com/dd0wney/jailgraph/internal/buffer"
 	"github.com/dd0wney/jailgraph/internal/collector"
@@ -66,6 +67,8 @@ func main() {
 		err = runDetect(os.Args[2:])
 	case "malware":
 		err = runMalware(os.Args[2:])
+	case "anomaly":
+		err = runAnomaly(os.Args[2:])
 	case "report":
 		err = runReport(os.Args[2:])
 	default:
@@ -130,6 +133,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  jailgraph audit --baseline <id[,id...]> --against <id> [--mode security|reproducibility] [--json] [--force]")
 	fmt.Fprintln(os.Stderr, "  jailgraph detect --run <id> [--json] [--force]")
 	fmt.Fprintln(os.Stderr, "  jailgraph malware --run <id> [--json] [--force]")
+	fmt.Fprintln(os.Stderr, "  jailgraph anomaly --run <id> [--baseline-target <name>] [--json] [--force]")
 	fmt.Fprintln(os.Stderr, "  jailgraph report --run <id[,id...]> [--json] [--force]")
 	os.Exit(2)
 }
@@ -283,6 +287,56 @@ func runMalware(argv []string) error {
 	}
 
 	report := malware.Analyze(signals)
+	if *jsonOut {
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+	} else {
+		fmt.Print(report.RenderText())
+	}
+	if report.HasHighOrAbove() {
+		return &exitErr{1, ""} // report already printed
+	}
+	return nil
+}
+
+// runAnomaly scores a candidate run's behaviour against the population of prior
+// runs of the same target (its learned "normal") and flags novelty — a known-good
+// binary doing something it never did. Exit codes mirror detect: 0 = no novelty
+// at/above High, 1 = novel behaviour found (report printed), 2 = could not run
+// (missing run, no baseline, lossy without --force, bad flags).
+func runAnomaly(argv []string) error {
+	fs := flag.NewFlagSet("anomaly", flag.ContinueOnError)
+	var (
+		graphURL = fs.String("graphdb-url", envOr("JAILGRAPH_GRAPHDB_URL", "http://localhost:8080"), "graphdb base URL")
+		apiKey   = fs.String("api-key", os.Getenv("JAILGRAPH_API_KEY"), "graphdb API key (X-API-Key)")
+		runID    = fs.String("run", "", "candidate run id to score for anomalies (required)")
+		baseTgt  = fs.String("baseline-target", "", "override the baseline program (default: the candidate's own target)")
+		jsonOut  = fs.Bool("json", false, "emit the report as JSON")
+		force    = fs.Bool("force", false, "analyze even if the candidate run was lossy")
+	)
+	if err := fs.Parse(argv); err != nil {
+		return err
+	}
+	if *runID == "" {
+		return &exitErr{2, "--run is required"}
+	}
+
+	client := newGraphClient(*graphURL, *apiKey)
+	cand, base, err := anomaly.Collect(context.Background(), client, *runID, *baseTgt, 500)
+	if err != nil {
+		return &exitErr{2, err.Error()}
+	}
+	if base.TotalRuns == 0 {
+		return &exitErr{2, fmt.Sprintf("no baseline: no other usable runs of target %q to compare against", base.Target)}
+	}
+	if cand.Lossy && !*force {
+		return &exitErr{2, fmt.Sprintf("run %s was lossy; anomaly scoring is degraded. Re-run with --force to override", *runID)}
+	}
+
+	report := anomaly.Analyze(cand, base, anomaly.FrequencyScorer{})
 	if *jsonOut {
 		data, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
