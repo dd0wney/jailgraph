@@ -4,12 +4,15 @@
 // distinct files, churns extensions (renames/unlinks), and moves real volume
 // looks like bulk encryption.
 //
-// Honesty (mirrors internal/harden): this is a structural heuristic WITHOUT
-// content entropy (deferred to phase 2), so it cannot distinguish encryption
-// from any other mass-rewrite workload — backups, compilers, archivers, package
-// managers all trip it. Every report says so, and there is no single "score".
-// It also requires the eBPF backend: a seccomp/replay run captures no writes, so
-// detection on it is reported as inconclusive rather than "clean".
+// On the eBPF backend a content-ENTROPY signal refines the verdict (escalating
+// encrypted bulk rewrites, de-escalating plaintext ones), but the shape still
+// decides — entropy only adjusts a structural verdict, never manufactures one.
+//
+// Honesty (mirrors internal/harden): a high-entropy bulk rewrite is "encrypted
+// OR compressed" — a compressed backup/archive trips it exactly like ransomware.
+// Every report says so, and there is no single "score". Detection requires a
+// write-capturing backend: a seccomp/replay run captures no writes, so detection
+// on it is reported as inconclusive rather than "clean".
 package detect
 
 import (
@@ -37,6 +40,10 @@ var (
 	// de-escalates ("plaintext bulk rewrite, likely benign").
 	TEntropyHigh = 6.8
 	TEntropyLow  = 4.5
+	// TEntropyFrac is the share of SAMPLED files that must fall in a band to move
+	// the verdict. Fraction (not mean) so a few incidental writes can't dilute a
+	// mostly-encrypted run below the line — the mean is dilution-sensitive.
+	TEntropyFrac = 0.5
 )
 
 // Severity is detect's own enum (no cross-import of audit/harden), so a string
@@ -188,9 +195,9 @@ func Analyze(s RunSummary) Report {
 
 	// The structural heuristic — always emitted so the output never reads as
 	// ground truth.
-	add("method", SevInfo, "structural heuristic only (no content entropy)",
-		"v1 detects bulk-rewrite shape, not encryption; entropy is deferred to phase 2",
-		"treat as a signal, not proof — backups, compilers, archivers, and package managers trip it too")
+	add("method", SevInfo, "behavioural heuristic — structural shape, entropy-refined (eBPF)",
+		"detects bulk-rewrite shape; on eBPF, write-content entropy refines it (encrypted vs plaintext)",
+		"treat as a signal, not proof — compressed backups/archivers are high-entropy and trip it like encryption")
 
 	// Detection requires file-write capture — the eBPF backend (Linux) or the
 	// eslogger backend (macOS). A seccomp/replay run sees no writes, so we cannot
@@ -212,8 +219,7 @@ func Analyze(s RunSummary) Report {
 	// Structural signal.
 	var distinct int
 	var churn, bytes int64
-	var entropySum float64
-	var entropyN int
+	var highN, lowN, sampledN int
 	for _, f := range s.Files {
 		if f.WriteCount > 0 {
 			distinct++
@@ -221,8 +227,12 @@ func Analyze(s RunSummary) Report {
 		churn += f.RenameCount + f.UnlinkCount
 		bytes += f.Bytes
 		if f.Entropy > 0 {
-			entropySum += f.Entropy
-			entropyN++
+			sampledN++
+			if f.Entropy >= TEntropyHigh {
+				highN++
+			} else if f.Entropy <= TEntropyLow {
+				lowN++
+			}
 		}
 	}
 	hitFiles := distinct >= TFiles
@@ -264,28 +274,30 @@ func Analyze(s RunSummary) Report {
 		}
 	}
 
-	// Entropy modifier: write-content entropy is the encryption signal. On a
-	// structural bulk rewrite (>= Medium), high mean entropy escalates one level
-	// ("consistent with encryption") and low entropy de-escalates one level
-	// ("plaintext bulk rewrite, likely benign"). Entropy alone never manufactures
-	// a verdict. eBPF-only — other backends capture no content.
-	if entropyN > 0 {
-		mean := entropySum / float64(entropyN)
+	// Entropy modifier: write-content entropy is the encryption signal, scored as
+	// the FRACTION of sampled files in each band (robust to dilution by incidental
+	// writes — the mean is not). On a structural bulk rewrite (>= Medium), a
+	// majority of high-entropy writes escalates one level ("consistent with
+	// encryption") and a majority of low-entropy writes de-escalates one level
+	// ("plaintext bulk rewrite"). Entropy never manufactures a verdict. eBPF-only.
+	if sampledN > 0 {
+		highFrac := float64(highN) / float64(sampledN)
+		lowFrac := float64(lowN) / float64(sampledN)
 		if sev.rank() >= SevMedium.rank() {
 			switch {
-			case mean >= TEntropyHigh:
+			case highFrac >= TEntropyFrac:
 				sev = bump(sev, +1)
-				add("entropy", SevInfo, fmt.Sprintf("high write entropy (%.2f bits/byte) — consistent with encryption", mean),
-					"sampled write content is near-random; escalated the structural verdict one level",
-					"high entropy also fits compression (zip/media); confirm the writes are not a legitimate archiver")
-			case mean <= TEntropyLow:
+				add("entropy", SevInfo, fmt.Sprintf("%.0f%% of sampled writes are high-entropy — consistent with encryption", highFrac*100),
+					"most written files are near-random; escalated the structural verdict one level",
+					"high entropy ALSO fits compression — a compressed backup/archive (tar.gz, borg, restic) escalates here too; confirm the writes are not a legitimate archiver")
+			case lowFrac >= TEntropyFrac:
 				sev = bump(sev, -1)
-				add("entropy", SevInfo, fmt.Sprintf("low write entropy (%.2f bits/byte) — plaintext bulk rewrite", mean),
-					"sampled write content is low-entropy (not encrypted); de-escalated the structural verdict one level",
-					"likely a build/copy/format/archive of plaintext rather than mass encryption")
+				add("entropy", SevInfo, fmt.Sprintf("%.0f%% of sampled writes are low-entropy (plaintext)", lowFrac*100),
+					"most written files are plaintext (not encrypted); de-escalated the structural verdict one level",
+					"likely an uncompressed build/copy/format of plaintext rather than mass encryption")
 			default:
-				add("entropy", SevInfo, fmt.Sprintf("moderate write entropy (%.2f bits/byte) — inconclusive", mean),
-					"entropy is between the plaintext and encrypted bands; left the structural verdict unchanged",
+				add("entropy", SevInfo, "mixed write entropy — inconclusive",
+					fmt.Sprintf("neither band dominates (%.0f%% high, %.0f%% low of sampled writes); left the structural verdict unchanged", highFrac*100, lowFrac*100),
 					"no entropy adjustment")
 			}
 		}

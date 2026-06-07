@@ -158,15 +158,19 @@ Read this before trusting a result:
 
 - **Entropy sharpens, structure decides (eBPF only).** The eBPF backend samples
   256 bytes of each file's write content and computes its Shannon entropy. On a
-  structural bulk rewrite, **high** mean entropy **escalates** the verdict one
-  level ("consistent with encryption") and **low** entropy **de-escalates** it
-  ("plaintext bulk rewrite — likely a build/copy/format/archive"), cutting false
-  positives on compilers and backups. Entropy never *manufactures* a verdict — it
-  only adjusts a structural one — and there is still no single "score". Honest
-  caveats: **high entropy also fits compression** (zip/media), so it is "encrypted
-  *or* compressed", not proof; thresholds are calibrated to the 256-byte sample
-  (encrypted measures ~7.2 bits/byte, not the theoretical 8.0); and on
-  seccomp/macOS (no content sampled) the verdict is structural-only and says so.
+  structural bulk rewrite, if a **majority of sampled writes are high-entropy** the
+  verdict **escalates** one level ("consistent with encryption"); if a majority are
+  **low-entropy** it **de-escalates** ("plaintext bulk rewrite"). It's a *fraction*,
+  not a mean, so a few incidental writes can't dilute a mostly-encrypted run.
+  Entropy never *manufactures* a verdict — it only adjusts a structural one — and
+  there is still no single "score". Honest caveats, stated plainly: this is a
+  **trade, not a pure win** — it removes false positives on *uncompressed* plaintext
+  rewrites (compilers, plain copies) but **adds** them on *compressed* ones, because
+  **a compressed backup/archive (tar.gz, borg, restic) is ~8-entropy and escalates
+  exactly like encryption** — entropy means "encrypted *or* compressed", not proof.
+  Thresholds are calibrated to the 256-byte sample (encrypted measures ~7.2
+  bits/byte, not the theoretical 8.0). On seccomp/macOS (no content sampled) the
+  verdict is structural-only and says so.
 - **Needs a write-capturing backend.** Write/rename/unlink capture comes from the
   **eBPF** backend (Linux) or the **esf** backend (macOS); a seccomp or `--replay`
   run records no writes, so detection on it is reported **inconclusive** (re-run
