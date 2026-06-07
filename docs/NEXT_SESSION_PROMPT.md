@@ -4,28 +4,31 @@
 > `SESSION_HANDOFF_*.md` for full context.
 
 ```
-jailgraph has no open code threads — it is feature-complete and the amd64 stór
-convergence is now VALIDATED.
+jailgraph is now a validated detection suite. `main` has ransomware `detect`
+(structural + entropy), `malware` behaviours, and macOS (esf) + eBPF + seccomp
+capture — all runtime-validated on real hardware (Fedora kernel 7.0 + this Mac).
 
-DONE 2026-06-06: amd64 jailgraph×stór reproducibility convergence validated on the
-Fedora workstation (kernel 7.0.10-201.fc44, native, BTF). Privileged
-TestStor_ReproducibilityConvergence → PASS: two genuine builds (built=2 cached=0
-each), 68 distinct syscalls, 3 binaries, no structural drift (tolerated hot-path
-noise +tgkill/-sched_yield). This also runtime-confirmed stór's read-only-store
-remount fix (70c6231) on a 7.0 kernel — its first real exercise. README's
-"stór reproducibility convergence" section now records both arch legs.
+ONE open code thread:
+- PR #8 (feat/anomaly): `jailgraph anomaly` — population behavioural anomaly
+  detection (living-off-the-land). Clean, independent, advisor-reviewed. Caveat
+  stated in the PR: its >=High exit path is unit-test-only (the box has only 2
+  /bin/sh runs, so a confident N>=5 baseline is unreachable there). MERGE IT, or
+  bank more runs of a binary first to exercise the >=High path on real data.
 
-No jailgraph work is queued. Two threads, both the USER's to direct:
+Workstation 10.10.2.243 is UP and staged (/tmp/jgws: graphdb on :8080, key in
+smoke.key, jailgraph-bin). Privileged eBPF runs need the YubiKey.
 
-1. stór side: relay that 70c6231 is runtime-confirmed (separate repo — do NOT edit
-   it from jailgraph).
-2. nasc Cutover B (separate repo, github.com/nasc): wire the approval plugin +
-   eligibility hook in front of sudo per nasc's CUTOVER_RUNBOOK.md so future
-   privileged jailgraph runs can be remote-approved instead of needing a local
-   desk-key tap. Brick-risk; follow the runbook with an independent pkexec
-   recovery shell open.
+Open directions, user's to pick (none pressing):
+1. Network capture signal (eBPF socket/connect hooks) → unlocks C2/exfil, the one
+   threat class jailgraph currently CANNOT see.
+2. Learned EmbeddingScorer (JEPA) behind the anomaly Scorer seam — once enough
+   runs accumulate to train; reported alongside, not replacing, the statistical
+   verdict.
+3. Enforcement (observe -> PREVENT): the seccomp user-notify backend can block a
+   syscall but always CONTINUEs today — turn a High verdict into an actual block.
+4. Fleet threat-hunting / continuous-monitoring daemon over the graph.
 
-Open question for the user (from the prior handoff): wind jailgraph down to
-maintenance, or pull a deferred analyzer (behavioral-ransomware detection /
-Lynis-style hardening report over the auditor) onto the active queue?
+Separate repos (NOT jailgraph): nasc Cutover B (wire approval plugin in front of
+sudo per CUTOVER_RUNBOOK.md — brick-risk, keep a pkexec recovery shell). stór
+70c6231 is already runtime-confirmed.
 ```
