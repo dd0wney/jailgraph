@@ -87,3 +87,34 @@ func TestAnalyze_SmallBaselineCapsSeverity(t *testing.T) {
 		t.Errorf("expected a low-confidence baseline finding:\n%s", r.RenderText())
 	}
 }
+
+func TestAnalyze_NonGateableSyscallNoveltyIsNotHigh(t *testing.T) {
+	// futex is novel (not in baseline) but NON-gateable → hot-path/scheduler noise
+	// that drifts between benign runs. It must not trip High; only a summary.
+	r := score(baselineN(8), beh([]string{"read", "futex"}, []string{"/bin/x"}, nil, nil))
+	if r.HasHighOrAbove() {
+		t.Errorf("a novel non-gateable syscall must not drive the verdict:\n%s", r.RenderText())
+	}
+	if !has(r, "non-security syscall(s) novel") {
+		t.Errorf("expected the non-gateable novelty summary:\n%s", r.RenderText())
+	}
+}
+
+func TestAnalyze_GateableSyscallStillHigh(t *testing.T) {
+	// A gateable novel syscall (setns) IS the meaningful signal → High.
+	r := score(baselineN(8), beh([]string{"read", "setns"}, []string{"/bin/x"}, nil, nil))
+	if !r.HasHighOrAbove() {
+		t.Errorf("a novel gateable syscall must still drive High:\n%s", r.RenderText())
+	}
+}
+
+func TestAnalyze_ExecBinaryNotDoubledAsFile(t *testing.T) {
+	// /usr/bin/curl is exec'd (Binary) AND opened (File); report it once, as a binary.
+	r := score(baselineN(8), beh([]string{"read"}, []string{"/bin/x", "/usr/bin/curl"}, []string{"/usr/bin/curl", "/etc/conf"}, nil))
+	if !has(r, "novel binary: /usr/bin/curl") {
+		t.Errorf("the exec'd novel binary should be reported:\n%s", r.RenderText())
+	}
+	if has(r, "novel file: /usr/bin/curl") {
+		t.Errorf("an exec'd binary must not also be reported as a novel file:\n%s", r.RenderText())
+	}
+}
