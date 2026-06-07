@@ -416,3 +416,37 @@ func TestRunDetect_MissingRunExitsTwo(t *testing.T) {
 		t.Errorf("missing --run should exit 2, got code %d (err %v)", code, err)
 	}
 }
+
+func TestRunMalware_CombinationExitsOne(t *testing.T) {
+	// Persistence (write /etc/cron.d) + credential (open /etc/shadow) = 2 categories → High.
+	f := newFakeGraph()
+	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{node(1, model.LabelRun, map[string]any{"id": "r1", "coverage": "full", "write_capture": true})}
+	f.byLabel[model.LabelProcess] = []*graphdb.NodeResponse{node(10, model.LabelProcess, map[string]any{model.PropKey: model.ProcessKey("r1", 10), "pid": float64(10), "ppid": float64(1), "exe": "/bin/sh"})}
+	f.byLabel[model.LabelFileActivity] = []*graphdb.NodeResponse{faNodeCLI("r1", "/etc/cron.d/evil", 1, 0, 0, 0)}
+	f.byNode[10] = []*graphdb.NodeResponse{node(30, model.LabelFile, map[string]any{"path": "/etc/shadow"})}
+	withFakeGraph(t, f)
+	err := runMalware([]string{"--run", "r1", "--api-key", "x"})
+	if code, _ := resolveExit(err); code != 1 {
+		t.Errorf("persistence + credential combination should exit 1, got code %d (err %v)", code, err)
+	}
+}
+
+func TestRunMalware_BenignExitsZero(t *testing.T) {
+	f := newFakeGraph()
+	f.byLabel[model.LabelRun] = []*graphdb.NodeResponse{node(1, model.LabelRun, map[string]any{"id": "r1", "coverage": "full", "write_capture": true})}
+	f.byLabel[model.LabelProcess] = []*graphdb.NodeResponse{node(10, model.LabelProcess, map[string]any{model.PropKey: model.ProcessKey("r1", 10), "pid": float64(10), "ppid": float64(1), "exe": "/bin/cat"})}
+	f.byLabel[model.LabelFileActivity] = []*graphdb.NodeResponse{faNodeCLI("r1", "/tmp/x", 1, 10, 0, 0)}
+	f.byNode[10] = []*graphdb.NodeResponse{node(30, model.LabelFile, map[string]any{"path": "/tmp/x"})}
+	withFakeGraph(t, f)
+	if err := runMalware([]string{"--run", "r1", "--api-key", "x"}); err != nil {
+		t.Errorf("benign run should exit 0 (nil), got %v", err)
+	}
+}
+
+func TestRunMalware_MissingRunExitsTwo(t *testing.T) {
+	withFakeGraph(t, newFakeGraph())
+	err := runMalware([]string{"--api-key", "x"})
+	if code, _ := resolveExit(err); code != 2 {
+		t.Errorf("missing --run should exit 2, got code %d (err %v)", code, err)
+	}
+}
