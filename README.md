@@ -84,10 +84,11 @@ Nodes: `Run`, `Process`, `Binary`, `Syscall`, `File`, `Capability`, `Namespace`,
 (`Binary`/`Syscall`/`File`/...) are content-keyed and reused across runs;
 `Process`/`Run`/`FileActivity` are per-run.
 
-`FileActivity` (eBPF backend only) is a per-run, per-file summary of write/rename/
-unlink activity — `{write_count, bytes, rename_count, unlink_count}` — the signal
-the ransomware detector consumes. It's stored as node properties (not edge
-properties) so an analyzer can read it back over the existing node-read path.
+`FileActivity` (eBPF + macOS esf backends) is a per-run, per-file summary of
+write/rename/unlink activity — `{write_count, bytes, rename_count, unlink_count,
+entropy}` — the signal the ransomware detector consumes. It's stored as node
+properties (not edge properties) so an analyzer can read it back over the existing
+node-read path. `entropy` (Shannon, bits/byte of a sampled write) is eBPF-only.
 
 ## Usage
 
@@ -146,19 +147,26 @@ runs are refused unless `--force`.
 
 ### Ransomware detection (`jailgraph detect`)
 
-An offline, **structural** ransomware detector over an eBPF-traced run's
-`FileActivity`. The signature is behavioural, not content-based: a run that
-**writes across many distinct files**, **churns extensions** (renames + unlinks),
-and **moves real volume** looks like bulk encryption. Severity escalates when the
-distinct-files / churn / bytes counts cross tunable thresholds.
+An offline ransomware detector over an eBPF-traced run's `FileActivity`. The
+**structural** signature is behavioural: a run that **writes across many distinct
+files**, **churns extensions** (renames + unlinks), and **moves real volume**
+looks like bulk encryption. Severity escalates when the distinct-files / churn /
+bytes counts cross tunable thresholds. On the eBPF backend a **content-entropy**
+signal then sharpens that verdict in both directions (below).
 
 Read this before trusting a result:
 
-- **Structural, not entropy-based (v1).** It detects bulk-rewrite *shape*, not
-  encrypted *content* (entropy is deferred to phase 2). So it cannot distinguish
-  ransomware from any other mass-rewrite workload — **backups, compilers,
-  archivers (`tar`), and package managers all trip it**. Every report says so. It
-  is a *signal*, not a verdict, and emits no single "score".
+- **Entropy sharpens, structure decides (eBPF only).** The eBPF backend samples
+  256 bytes of each file's write content and computes its Shannon entropy. On a
+  structural bulk rewrite, **high** mean entropy **escalates** the verdict one
+  level ("consistent with encryption") and **low** entropy **de-escalates** it
+  ("plaintext bulk rewrite — likely a build/copy/format/archive"), cutting false
+  positives on compilers and backups. Entropy never *manufactures* a verdict — it
+  only adjusts a structural one — and there is still no single "score". Honest
+  caveats: **high entropy also fits compression** (zip/media), so it is "encrypted
+  *or* compressed", not proof; thresholds are calibrated to the 256-byte sample
+  (encrypted measures ~7.2 bits/byte, not the theoretical 8.0); and on
+  seccomp/macOS (no content sampled) the verdict is structural-only and says so.
 - **Needs a write-capturing backend.** Write/rename/unlink capture comes from the
   **eBPF** backend (Linux) or the **esf** backend (macOS); a seccomp or `--replay`
   run records no writes, so detection on it is reported **inconclusive** (re-run
@@ -271,9 +279,9 @@ builds and runs, and `--replay` exercises the full ingest pipeline.
   auditing.
 - **vs. static AV (e.g. hash/YARA scanners)** — different axis again: static
   known-bad *file* identification vs. runtime confinement of trusted programs.
-  Out of scope. *Behavioral* ransomware detection is a natural future analyzer
-  over the auditor track, but it needs file-write/IO signals that favor the
-  (later) eBPF backend.
+  Out of scope. *Behavioral* ransomware detection IS implemented (`jailgraph
+  detect`) — a structural bulk-rewrite signature plus content entropy over the
+  eBPF/esf backends' file-write capture — complementing static AV, not replacing it.
 
 ## Status
 
