@@ -105,9 +105,14 @@ struct {
 // write_stats: inode -> aggregated write count + bytes. Like `seen`, the hot
 // write path is folded IN-KERNEL (never streamed) and read out at teardown. The
 // per-inode counter already folds writes across the tracked subtree (run-level).
+// WRITE_SAMPLE_LEN bytes of the first sufficiently-large write are sampled per
+// inode for userspace Shannon-entropy (the ransomware encryption signal).
+#define WRITE_SAMPLE_LEN 256
 struct write_stat {
 	__u64 count;
 	__u64 bytes;
+	__u32 sample_len; // 0 until a write >= WRITE_SAMPLE_LEN is sampled
+	__u8  sample[WRITE_SAMPLE_LEN];
 };
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -243,8 +248,20 @@ int BPF_PROG(handle_write, struct file *file, const char *buf, size_t count)
 	if (st) {
 		st->count += 1;
 		st->bytes += count;
+		// Sample the first write large enough to fill the buffer (fixed size →
+		// verifier-friendly; short writes are skipped, not partially read).
+		if (st->sample_len == 0 && count >= WRITE_SAMPLE_LEN) {
+			if (bpf_probe_read_user(st->sample, WRITE_SAMPLE_LEN, buf) == 0)
+				st->sample_len = WRITE_SAMPLE_LEN;
+		}
 	} else {
-		struct write_stat init = {.count = 1, .bytes = count};
+		struct write_stat init = {};
+		init.count = 1;
+		init.bytes = count;
+		if (count >= WRITE_SAMPLE_LEN) {
+			if (bpf_probe_read_user(init.sample, WRITE_SAMPLE_LEN, buf) == 0)
+				init.sample_len = WRITE_SAMPLE_LEN;
+		}
 		bpf_map_update_elem(&write_stats, &ino, &init, BPF_ANY);
 	}
 	return 0;

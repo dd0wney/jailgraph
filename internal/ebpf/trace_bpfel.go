@@ -19,9 +19,12 @@ type tracePathBuf struct {
 }
 
 type traceWriteStat struct {
-	_     structs.HostLayout
-	Count uint64
-	Bytes uint64
+	_         structs.HostLayout
+	Count     uint64
+	Bytes     uint64
+	SampleLen uint32
+	Sample    [256]uint8
+	_         [4]byte
 }
 
 // loadTrace returns the embedded CollectionSpec for trace.
