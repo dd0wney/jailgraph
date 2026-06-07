@@ -347,7 +347,7 @@ func (c *ebpfCollector) finalize(ctx context.Context) {
 	// FileActivity event per file. Touching fileAgg here is safe: the ringbuf
 	// goroutine (the only other writer) has finished (<-ringbufDone above).
 	var ino uint64
-	var ws writeStat
+	var ws traceWriteStat // generated type: exact C layout incl. the content sample
 	var pb [256]byte
 	var writes []pathWrite
 	wit := c.objs.WriteStats.Iterate()
@@ -358,7 +358,19 @@ func (c *ebpfCollector) finalize(ctx context.Context) {
 				path = p
 			}
 		}
-		writes = append(writes, pathWrite{path: path, stat: ws})
+		// Copy the per-file write-content sample (ws is reused each iteration).
+		var sample []byte
+		if n := int(ws.SampleLen); n > 0 {
+			if n > len(ws.Sample) {
+				n = len(ws.Sample)
+			}
+			sample = append([]byte(nil), ws.Sample[:n]...)
+		}
+		writes = append(writes, pathWrite{
+			path:   path,
+			stat:   writeStat{Count: ws.Count, Bytes: ws.Bytes},
+			sample: sample,
+		})
 	}
 	if err := wit.Err(); err != nil {
 		c.emitErr(fmt.Errorf("iterate write_stats map: %w", err))

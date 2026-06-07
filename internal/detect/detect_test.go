@@ -140,3 +140,79 @@ func TestAnalyze_MacOSWriteCaptureNoBytesReachesHigh(t *testing.T) {
 		t.Errorf("macOS partial+write-capture mass write+churn (bytes=0) should reach >=High:\n%s", r.RenderText())
 	}
 }
+
+// entropyRun builds a full-coverage (eBPF) run of n written files, each with the
+// given byte size and entropy, plus one rename apiece (churn).
+func entropyRun(n int, bytesEach int64, entropy float64) RunSummary {
+	s := RunSummary{RunID: "r1", Coverage: "full (eBPF)", WriteCapture: true}
+	for i := 0; i < n; i++ {
+		p := "/d/f" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+		s.Files = append(s.Files, FileActivity{Path: p, WriteCount: 1, Bytes: bytesEach, RenameCount: 1, Entropy: entropy})
+	}
+	return s
+}
+
+func TestAnalyze_HighEntropyEscalates(t *testing.T) {
+	// Structural Medium (files+churn cross, bytes tiny) + realistic encrypted
+	// entropy (~7.2, what a 256-byte sample of random data actually measures) → High.
+	r := Analyze(entropyRun(TFiles+5, 1, 7.2))
+	if !r.HasHighOrAbove() {
+		t.Errorf("high-entropy bulk rewrite should escalate to >=High:\n%s", r.RenderText())
+	}
+	if !strings.Contains(r.RenderText(), "consistent with encryption") {
+		t.Errorf("expected encryption-consistent entropy finding:\n%s", r.RenderText())
+	}
+}
+
+func TestAnalyze_LowEntropyDeEscalates(t *testing.T) {
+	// Structural High (all 3 axes cross) but plaintext entropy → de-escalated below High.
+	r := Analyze(entropyRun(TFiles+5, TBytes, 4.0))
+	if r.HasHighOrAbove() {
+		t.Errorf("low-entropy (plaintext) bulk rewrite should de-escalate below High:\n%s", r.RenderText())
+	}
+	if !strings.Contains(r.RenderText(), "low-entropy (plaintext)") {
+		t.Errorf("expected plaintext de-escalation finding:\n%s", r.RenderText())
+	}
+}
+
+func TestAnalyze_EntropyUnsampledNoted(t *testing.T) {
+	// Writes captured but no content sampled (entropy 0) → structural-only note,
+	// and the structural verdict is unchanged (no modifier).
+	r := Analyze(entropyRun(TFiles+5, 1, 0))
+	if !strings.Contains(r.RenderText(), "not sampled") {
+		t.Errorf("expected a 'content not sampled' note when entropy is absent:\n%s", r.RenderText())
+	}
+}
+
+// mixedEntropyRun builds nHigh files at highE plus nLow at lowE (each written
+// once, with churn), full-coverage — to exercise the high-entropy FRACTION.
+func mixedEntropyRun(nHigh int, highE float64, nLow int, lowE float64) RunSummary {
+	s := RunSummary{RunID: "r1", Coverage: "full (eBPF)", WriteCapture: true}
+	add := func(n int, e float64, tag string) {
+		for i := 0; i < n; i++ {
+			p := "/d/" + tag + string(rune('a'+i%26)) + string(rune('0'+i/26))
+			s.Files = append(s.Files, FileActivity{Path: p, WriteCount: 1, Bytes: 1, RenameCount: 1, Entropy: e})
+		}
+	}
+	add(nHigh, highE, "h")
+	add(nLow, lowE, "l")
+	return s
+}
+
+func TestAnalyze_MostlyEncryptedEscalatesDespiteDilution(t *testing.T) {
+	// 60 encrypted + 6 incidental plaintext writes (the dilution that sank the
+	// mean on-box): high fraction ~0.91 → still escalates. This is the property
+	// the mean lacked.
+	r := Analyze(mixedEntropyRun(60, 7.2, 6, 3.0))
+	if !r.HasHighOrAbove() {
+		t.Errorf("mostly-encrypted run must escalate despite incidental low-entropy writes:\n%s", r.RenderText())
+	}
+}
+
+func TestAnalyze_MostlyPlaintextDoesNotEscalate(t *testing.T) {
+	// A few encrypted files among many plaintext → majority low → de-escalates.
+	r := Analyze(mixedEntropyRun(6, 7.2, 60, 3.0))
+	if r.HasHighOrAbove() {
+		t.Errorf("mostly-plaintext run must not escalate on a few high-entropy files:\n%s", r.RenderText())
+	}
+}

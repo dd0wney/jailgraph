@@ -184,7 +184,7 @@ func TestEventToGraph_OpenCarriesMode(t *testing.T) {
 func TestEventToGraph_FileActivityIsPerRunNodeWithNoProcessLeak(t *testing.T) {
 	e := collector.BehaviorEvent{
 		Kind: collector.EventFileActivity, Path: "/data/doc.txt",
-		WriteCount: 12, Bytes: 4096, RenameCount: 1, UnlinkCount: 2,
+		WriteCount: 12, Bytes: 4096, RenameCount: 1, UnlinkCount: 2, Entropy: 7.9,
 	}
 	nodes, edges := EventToGraph("runX", e)
 
@@ -203,7 +203,7 @@ func TestEventToGraph_FileActivityIsPerRunNodeWithNoProcessLeak(t *testing.T) {
 	}
 	for k, want := range map[string]any{
 		"path": "/data/doc.txt", "write_count": int64(12), "bytes": int64(4096),
-		"rename_count": int64(1), "unlink_count": int64(2),
+		"rename_count": int64(1), "unlink_count": int64(2), "entropy": 7.9,
 	} {
 		if n.Properties[k] != want {
 			t.Errorf("prop %s = %v (%T), want %v", k, n.Properties[k], n.Properties[k], want)

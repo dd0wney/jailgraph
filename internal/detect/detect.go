@@ -4,12 +4,15 @@
 // distinct files, churns extensions (renames/unlinks), and moves real volume
 // looks like bulk encryption.
 //
-// Honesty (mirrors internal/harden): this is a structural heuristic WITHOUT
-// content entropy (deferred to phase 2), so it cannot distinguish encryption
-// from any other mass-rewrite workload — backups, compilers, archivers, package
-// managers all trip it. Every report says so, and there is no single "score".
-// It also requires the eBPF backend: a seccomp/replay run captures no writes, so
-// detection on it is reported as inconclusive rather than "clean".
+// On the eBPF backend a content-ENTROPY signal refines the verdict (escalating
+// encrypted bulk rewrites, de-escalating plaintext ones), but the shape still
+// decides — entropy only adjusts a structural verdict, never manufactures one.
+//
+// Honesty (mirrors internal/harden): a high-entropy bulk rewrite is "encrypted
+// OR compressed" — a compressed backup/archive trips it exactly like ransomware.
+// Every report says so, and there is no single "score". Detection requires a
+// write-capturing backend: a seccomp/replay run captures no writes, so detection
+// on it is reported as inconclusive rather than "clean".
 package detect
 
 import (
@@ -27,6 +30,20 @@ var (
 	TFiles = 50              // distinct files written
 	TChurn = int64(25)       // renames + unlinks
 	TBytes = int64(10 << 20) // total bytes written (10 MiB)
+
+	// Entropy thresholds (bits/byte) for the encryption signal, calibrated to the
+	// eBPF backend's fixed 256-byte content sample. A 256-byte sample of random
+	// data does NOT reach the theoretical 8.0 — with only 256 draws over 256
+	// values, ~160 distinct appear, so encrypted/compressed content empirically
+	// measures ~7.0-7.4 (validated on-box: encrypted 7.18, plaintext 3.09). High
+	// entropy on a bulk rewrite escalates ("consistent with encryption"); low
+	// de-escalates ("plaintext bulk rewrite, likely benign").
+	TEntropyHigh = 6.8
+	TEntropyLow  = 4.5
+	// TEntropyFrac is the share of SAMPLED files that must fall in a band to move
+	// the verdict. Fraction (not mean) so a few incidental writes can't dilute a
+	// mostly-encrypted run below the line — the mean is dilution-sensitive.
+	TEntropyFrac = 0.5
 )
 
 // Severity is detect's own enum (no cross-import of audit/harden), so a string
@@ -55,11 +72,12 @@ func (s Severity) rank() int {
 
 // FileActivity is one file's per-run write/rename/unlink stats.
 type FileActivity struct {
-	Path        string `json:"path"`
-	WriteCount  int64  `json:"write_count"`
-	Bytes       int64  `json:"bytes"`
-	RenameCount int64  `json:"rename_count"`
-	UnlinkCount int64  `json:"unlink_count"`
+	Path        string  `json:"path"`
+	WriteCount  int64   `json:"write_count"`
+	Bytes       int64   `json:"bytes"`
+	RenameCount int64   `json:"rename_count"`
+	UnlinkCount int64   `json:"unlink_count"`
+	Entropy     float64 `json:"entropy"` // bits/byte of sampled content; 0 if unsampled (eBPF-only)
 }
 
 // RunSummary is the detector's input: one run's coverage state + file activity.
@@ -142,6 +160,7 @@ func Collect(ctx context.Context, client GraphClient, runID string, pageLimit in
 		path, _ := n.Properties["path"].(string)
 		s.Files = append(s.Files, FileActivity{
 			Path:        path,
+			Entropy:     toFloat(n.Properties["entropy"]),
 			WriteCount:  toInt64(n.Properties["write_count"]),
 			Bytes:       toInt64(n.Properties["bytes"]),
 			RenameCount: toInt64(n.Properties["rename_count"]),
@@ -176,9 +195,9 @@ func Analyze(s RunSummary) Report {
 
 	// The structural heuristic — always emitted so the output never reads as
 	// ground truth.
-	add("method", SevInfo, "structural heuristic only (no content entropy)",
-		"v1 detects bulk-rewrite shape, not encryption; entropy is deferred to phase 2",
-		"treat as a signal, not proof — backups, compilers, archivers, and package managers trip it too")
+	add("method", SevInfo, "behavioural heuristic — structural shape, entropy-refined (eBPF)",
+		"detects bulk-rewrite shape; on eBPF, write-content entropy refines it (encrypted vs plaintext)",
+		"treat as a signal, not proof — compressed backups/archivers are high-entropy and trip it like encryption")
 
 	// Detection requires file-write capture — the eBPF backend (Linux) or the
 	// eslogger backend (macOS). A seccomp/replay run sees no writes, so we cannot
@@ -200,61 +219,133 @@ func Analyze(s RunSummary) Report {
 	// Structural signal.
 	var distinct int
 	var churn, bytes int64
+	var highN, lowN, sampledN int
 	for _, f := range s.Files {
 		if f.WriteCount > 0 {
 			distinct++
 		}
 		churn += f.RenameCount + f.UnlinkCount
 		bytes += f.Bytes
+		if f.Entropy > 0 {
+			sampledN++
+			if f.Entropy >= TEntropyHigh {
+				highN++
+			} else if f.Entropy <= TEntropyLow {
+				lowN++
+			}
+		}
 	}
 	hitFiles := distinct >= TFiles
 	hitChurn := churn >= TChurn
 
 	// Bytes-adaptive: the eBPF backend reports write volume (3-axis signature);
 	// macOS ES exposes no write size, so when there is no byte data we grade on
-	// the two observable axes (write-spread + churn) — a clear ransomware shape
-	// still reaches High/Critical on a Mac.
+	// the two observable axes (write-spread + churn).
+	var sev Severity
+	var title, ev, rec string
 	if bytes > 0 {
 		hitBytes := bytes >= TBytes
 		strong := distinct >= 2*TFiles && churn >= 2*TChurn && bytes >= 2*TBytes
-		ev := fmt.Sprintf("%d distinct files written, %d renames+unlinks, %d bytes (thresholds: %d / %d / %d)",
+		ev = fmt.Sprintf("%d distinct files written, %d renames+unlinks, %d bytes (thresholds: %d / %d / %d)",
 			distinct, churn, bytes, TFiles, TChurn, TBytes)
 		switch {
 		case hitFiles && hitChurn && hitBytes && strong:
-			add("ransomware", SevCritical, "strong bulk-rewrite + churn signature", ev,
-				"isolate and investigate: matches mass-encryption behavior on every structural axis")
+			sev, title, rec = SevCritical, "strong bulk-rewrite + churn signature", "isolate and investigate: matches mass-encryption behavior on every structural axis"
 		case hitFiles && hitChurn && hitBytes:
-			add("ransomware", SevHigh, "bulk-rewrite + extension-churn signature", ev,
-				"investigate: write-spread, churn, and volume all exceed thresholds")
+			sev, title, rec = SevHigh, "bulk-rewrite + extension-churn signature", "investigate: write-spread, churn, and volume all exceed thresholds"
 		case b2i(hitFiles)+b2i(hitChurn)+b2i(hitBytes) >= 2:
-			add("ransomware", SevMedium, "partial bulk-rewrite signature", ev,
-				"review: some but not all structural axes exceed thresholds")
+			sev, title, rec = SevMedium, "partial bulk-rewrite signature", "review: some but not all structural axes exceed thresholds"
 		default:
-			add("ransomware", SevInfo, "no bulk-rewrite signature", ev,
-				"no action: file activity is below the structural thresholds")
+			sev, title, rec = SevInfo, "no bulk-rewrite signature", "no action: file activity is below the structural thresholds"
 		}
 	} else {
 		strong := distinct >= 2*TFiles && churn >= 2*TChurn
-		ev := fmt.Sprintf("%d distinct files written, %d renames+unlinks, no byte volume on this backend (thresholds: %d files / %d churn)",
+		ev = fmt.Sprintf("%d distinct files written, %d renames+unlinks, no byte volume on this backend (thresholds: %d files / %d churn)",
 			distinct, churn, TFiles, TChurn)
 		switch {
 		case hitFiles && hitChurn && strong:
-			add("ransomware", SevCritical, "strong bulk-rewrite + churn signature", ev,
-				"isolate and investigate: write-spread and churn both far exceed thresholds")
+			sev, title, rec = SevCritical, "strong bulk-rewrite + churn signature", "isolate and investigate: write-spread and churn both far exceed thresholds"
 		case hitFiles && hitChurn:
-			add("ransomware", SevHigh, "bulk-rewrite + extension-churn signature", ev,
-				"investigate: write-spread and churn both exceed thresholds (byte volume not observable on this backend)")
+			sev, title, rec = SevHigh, "bulk-rewrite + extension-churn signature", "investigate: write-spread and churn both exceed thresholds (byte volume not observable on this backend)"
 		case hitFiles || hitChurn:
-			add("ransomware", SevMedium, "partial bulk-rewrite signature", ev,
-				"review: one of write-spread / churn exceeds its threshold")
+			sev, title, rec = SevMedium, "partial bulk-rewrite signature", "review: one of write-spread / churn exceeds its threshold"
 		default:
-			add("ransomware", SevInfo, "no bulk-rewrite signature", ev,
-				"no action: file activity is below the structural thresholds")
+			sev, title, rec = SevInfo, "no bulk-rewrite signature", "no action: file activity is below the structural thresholds"
 		}
 	}
 
+	// Entropy modifier: write-content entropy is the encryption signal, scored as
+	// the FRACTION of sampled files in each band (robust to dilution by incidental
+	// writes — the mean is not). On a structural bulk rewrite (>= Medium), a
+	// majority of high-entropy writes escalates one level ("consistent with
+	// encryption") and a majority of low-entropy writes de-escalates one level
+	// ("plaintext bulk rewrite"). Entropy never manufactures a verdict. eBPF-only.
+	if sampledN > 0 {
+		highFrac := float64(highN) / float64(sampledN)
+		lowFrac := float64(lowN) / float64(sampledN)
+		if sev.rank() >= SevMedium.rank() {
+			switch {
+			case highFrac >= TEntropyFrac:
+				sev = bump(sev, +1)
+				add("entropy", SevInfo, fmt.Sprintf("%.0f%% of sampled writes are high-entropy — consistent with encryption", highFrac*100),
+					"most written files are near-random; escalated the structural verdict one level",
+					"high entropy ALSO fits compression — a compressed backup/archive (tar.gz, borg, restic) escalates here too; confirm the writes are not a legitimate archiver")
+			case lowFrac >= TEntropyFrac:
+				sev = bump(sev, -1)
+				add("entropy", SevInfo, fmt.Sprintf("%.0f%% of sampled writes are low-entropy (plaintext)", lowFrac*100),
+					"most written files are plaintext (not encrypted); de-escalated the structural verdict one level",
+					"likely an uncompressed build/copy/format of plaintext rather than mass encryption")
+			default:
+				add("entropy", SevInfo, "mixed write entropy — inconclusive",
+					fmt.Sprintf("neither band dominates (%.0f%% high, %.0f%% low of sampled writes); left the structural verdict unchanged", highFrac*100, lowFrac*100),
+					"no entropy adjustment")
+			}
+		}
+	} else if s.WriteCapture {
+		add("entropy", SevInfo, "write content not sampled — verdict is structural only",
+			"the encryption (entropy) signal needs the eBPF backend's content sampling; this run has none",
+			"on Linux use --collector ebpf to enable the entropy axis")
+	}
+
+	add("ransomware", sev, title, ev, rec)
 	finalize(&r)
 	return r
+}
+
+// bump shifts a severity by delta levels along Info<Medium<High<Critical,
+// clamped at the ends.
+func bump(s Severity, delta int) Severity {
+	order := []Severity{SevInfo, SevMedium, SevHigh, SevCritical}
+	idx := 0
+	for i, o := range order {
+		if o == s {
+			idx = i
+		}
+	}
+	idx += delta
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(order) {
+		idx = len(order) - 1
+	}
+	return order[idx]
+}
+
+// toFloat coerces a graph property (float64 from JSON, or a native numeric) to float64.
+func toFloat(v any) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case float32:
+		return float64(x)
+	case int64:
+		return float64(x)
+	case int:
+		return float64(x)
+	default:
+		return 0
+	}
 }
 
 func b2i(b bool) int {

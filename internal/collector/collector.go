@@ -110,12 +110,14 @@ type BehaviorEvent struct {
 
 	// File I/O aggregate (EventFileActivity). Populated only for that kind; Path
 	// carries the file path. Counts are run-level (folded across the process tree
-	// at teardown). Entropy is intentionally absent in v1 (deferred to phase 2);
-	// the FileActivity node's flat property map accommodates adding it later.
+	// at teardown). Entropy is the Shannon entropy (bits/byte, 0..8) of a sample
+	// of the written content — the ransomware encryption signal; 0 when the
+	// backend captured no content (eBPF-only; macOS ES exposes no write content).
 	WriteCount  int64
 	Bytes       int64
 	RenameCount int64
 	UnlinkCount int64
+	Entropy     float64
 
 	// Lossy is true when the producing pipeline dropped events before this one.
 	// It propagates to the Run node so a generated profile is never silently
