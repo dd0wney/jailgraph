@@ -117,6 +117,10 @@ jailgraph audit --baseline <run1>,<run2> --against <run3> --mode security
 # Exit codes: 0 = no signature >= High, 1 = signature found, 2 = could not run.
 jailgraph detect --run <run-id>
 
+# Scan a run for co-occurring malware behaviours (persistence/lineage/privesc/creds).
+# Exit codes: 0 = nothing >= High, 1 = a High/Critical combination, 2 = could not run.
+jailgraph malware --run <run-id>
+
 # Hardening report: evidence-based, severity-ranked findings for one program.
 # Exit codes: 0 = nothing >= High, 1 = a High/Critical finding, 2 = could not run.
 jailgraph report --run <run1>,<run2>
@@ -175,6 +179,36 @@ Exit codes: `0` = no signature at/above High, `1` = a High/Critical signature
 (report still printed), `2` = could not run (missing run, or lossy without
 `--force`). The `0` on an inconclusive seccomp run means "nothing detected with
 what this backend can see", not "clean".
+
+### Malware-behaviour scan (`jailgraph malware`)
+
+Where `detect` is the sharp, ransomware-specific signature, **`malware`** is the
+broader **threat-combination** scan: it scores the **co-occurrence** of four
+behavioural categories over a run, because any one alone is weak but several
+together are a real pattern.
+
+- **persistence-write** — a write to a boot/login auto-start location (`/etc/cron*`,
+  `/etc/systemd/system`, `~/.config/autostart`, shell rc files; macOS
+  `/Library/LaunchDaemons`, `~/Library/LaunchAgents`). *New* signal — `harden`
+  only sees opens, not writes to these.
+- **suspicious-lineage** — a shell/interpreter spawned by a network/document app
+  (browser, mail, Office, `curl`). Built from the process tree (`pid`/`ppid`/`exe`),
+  so it works on **every backend**; honest that only each process's *final* binary
+  is known.
+- **privesc** — `CAP_SETUID`/`CAP_SETGID`/`CAP_SYS_ADMIN` (eBPF) or the `capset`
+  syscall (seccomp/eBPF).
+- **credential-access** — opens of credential stores (`/etc/shadow`, ssh keys,
+  macOS keychain).
+
+**Severity = how many categories co-occur** (not a numeric score): 1 → Medium,
+2 → High, 3+ → Critical; lineage alone is capped at Medium. Honest about coverage
+— a category a backend can't observe (writes on seccomp; caps/privesc on the
+macOS write-only backend) is reported **"not observable on this backend"** and
+**excluded from any "clean" verdict**, never silently passed. It always emits a
+method disclaimer: legitimate installers and admin tools can trip individual
+categories, so this is a signal to investigate, not a verdict. Exit codes mirror
+`detect` (1 iff a High/Critical combination). The launcher/interpreter and
+persistence/credential path sets are deliberately tight and tunable.
 
 ### Hardening report (`jailgraph report`)
 
