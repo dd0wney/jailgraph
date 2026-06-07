@@ -28,12 +28,15 @@ var (
 	TChurn = int64(25)       // renames + unlinks
 	TBytes = int64(10 << 20) // total bytes written (10 MiB)
 
-	// Entropy thresholds (bits/byte, 0..8) for the encryption signal. Encrypted/
-	// compressed content is ~7.9-8.0; plaintext/source ~4-5. High entropy on a
-	// bulk rewrite escalates ("consistent with encryption"); low entropy
+	// Entropy thresholds (bits/byte) for the encryption signal, calibrated to the
+	// eBPF backend's fixed 256-byte content sample. A 256-byte sample of random
+	// data does NOT reach the theoretical 8.0 — with only 256 draws over 256
+	// values, ~160 distinct appear, so encrypted/compressed content empirically
+	// measures ~7.0-7.4 (validated on-box: encrypted 7.18, plaintext 3.09). High
+	// entropy on a bulk rewrite escalates ("consistent with encryption"); low
 	// de-escalates ("plaintext bulk rewrite, likely benign").
-	TEntropyHigh = 7.5
-	TEntropyLow  = 5.0
+	TEntropyHigh = 6.8
+	TEntropyLow  = 4.5
 )
 
 // Severity is detect's own enum (no cross-import of audit/harden), so a string

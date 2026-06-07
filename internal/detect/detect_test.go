@@ -153,8 +153,9 @@ func entropyRun(n int, bytesEach int64, entropy float64) RunSummary {
 }
 
 func TestAnalyze_HighEntropyEscalates(t *testing.T) {
-	// Structural Medium (files+churn cross, bytes tiny) + high entropy → High.
-	r := Analyze(entropyRun(TFiles+5, 1, 7.9))
+	// Structural Medium (files+churn cross, bytes tiny) + realistic encrypted
+	// entropy (~7.2, what a 256-byte sample of random data actually measures) → High.
+	r := Analyze(entropyRun(TFiles+5, 1, 7.2))
 	if !r.HasHighOrAbove() {
 		t.Errorf("high-entropy bulk rewrite should escalate to >=High:\n%s", r.RenderText())
 	}
