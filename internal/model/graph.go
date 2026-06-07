@@ -159,6 +159,7 @@ func fileActivityGraph(runID string, e collector.BehaviorEvent) ([]Node, []Edge)
 			"bytes":        e.Bytes,
 			"rename_count": e.RenameCount,
 			"unlink_count": e.UnlinkCount,
+			"entropy":      e.Entropy,
 			PropKey:        key,
 		},
 	}

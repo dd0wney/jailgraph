@@ -4,7 +4,34 @@
 
 package ebpf
 
-import "github.com/dd0wney/jailgraph/internal/collector"
+import (
+	"math"
+
+	"github.com/dd0wney/jailgraph/internal/collector"
+)
+
+// shannonEntropy returns the Shannon entropy of data in bits/byte (0..8). It is
+// the ransomware "encryption" signal: plaintext/source is ~4-5, while encrypted
+// or compressed content is ~7.9-8.0. Pure, so it is unit-tested without a kernel.
+func shannonEntropy(data []byte) float64 {
+	if len(data) == 0 {
+		return 0
+	}
+	var counts [256]int
+	for _, b := range data {
+		counts[b]++
+	}
+	n := float64(len(data))
+	var h float64
+	for _, c := range counts {
+		if c == 0 {
+			continue
+		}
+		p := float64(c) / n
+		h -= p * math.Log2(p)
+	}
+	return h
+}
 
 // writeStat mirrors `struct write_stat` in trace.bpf.c (two u64, 16 bytes); it is
 // the value type read out of the in-kernel write_stats map.
@@ -21,12 +48,16 @@ type fileStat struct {
 	bytes   int64
 	renames int64
 	unlinks int64
+	entropy float64 // Shannon entropy of the sampled write content (0 if unsampled)
 }
 
-// pathWrite pairs a resolved file path with its in-kernel write aggregate.
+// pathWrite pairs a resolved file path with its in-kernel write aggregate and a
+// small sample of the written bytes (for entropy). sample is nil when the kernel
+// captured no content (e.g. a rename/unlink-only file).
 type pathWrite struct {
-	path string
-	stat writeStat
+	path   string
+	stat   writeStat
+	sample []byte
 }
 
 // foldFileActivity merges resolved per-path write stats into the rename/unlink
@@ -41,6 +72,9 @@ func foldFileActivity(agg map[string]*fileStat, writes []pathWrite) []collector.
 		}
 		st.writes += int64(w.stat.Count)
 		st.bytes += int64(w.stat.Bytes)
+		if len(w.sample) > 0 {
+			st.entropy = shannonEntropy(w.sample)
+		}
 	}
 	out := make([]collector.BehaviorEvent, 0, len(agg))
 	for path, st := range agg {
@@ -51,6 +85,7 @@ func foldFileActivity(agg map[string]*fileStat, writes []pathWrite) []collector.
 			Bytes:       st.bytes,
 			RenameCount: st.renames,
 			UnlinkCount: st.unlinks,
+			Entropy:     st.entropy,
 		})
 	}
 	return out
