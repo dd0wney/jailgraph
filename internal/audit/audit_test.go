@@ -91,8 +91,8 @@ func TestNormalizePath(t *testing.T) {
 		"/etc/hostname": "/etc/hostname",
 	}
 	for in, want := range cases {
-		if got := normalizePath(in); got != want {
-			t.Errorf("normalizePath(%q) = %q, want %q", in, got, want)
+		if got := NormalizePath(in); got != want {
+			t.Errorf("NormalizePath(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
