@@ -70,7 +70,10 @@ type Behavior struct {
 // enforce-safe baseline, since a single run misses error/signal/rare-branch
 // paths. Set-valued fields union; Lossy is OR (any lossy run taints the result);
 // FullCoverage is AND (the union is full-coverage only if EVERY run was — an
-// eBPF run unioned with a seccomp run is partial).
+// eBPF run unioned with a seccomp run is partial). NetCapture is NOT merged:
+// the unioned Behavior is always treated as network-blind (conservative
+// default-false), since a mixed union can't honestly claim the net_capture
+// guarantee of every input run.
 func Union(runID string, behaviors ...Behavior) Behavior {
 	u := Behavior{RunID: runID, Syscalls: map[string]bool{}, FullCoverage: len(behaviors) > 0}
 	files, bins, caps, ns := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
@@ -301,8 +304,29 @@ func RenderFirejail(b Behavior) string {
 	}
 	w("")
 
+	networkObserved := len(b.Endpoints) > 0 || len(b.Domains) > 0
+	if networkObserved {
+		w("# --- network destinations observed (informational) ---")
+		if len(b.Endpoints) > 0 {
+			w("# endpoints: %s", strings.Join(b.Endpoints, ", "))
+		}
+		if len(b.Domains) > 0 {
+			w("# domains:   %s", strings.Join(b.Domains, ", "))
+		}
+		w("")
+	}
+
 	w("# --- conservative DEFAULTS (not from observation) ---")
-	w("# network syscalls are not yet observed; assume none. Remove if the program needs net.")
+	if networkObserved {
+		// The generic "not yet observed" claim would be false here — the run DID
+		// contact the network (see the observed destinations above), so `net
+		// none` as-is will break the program. Keep the conservative default but
+		// say so honestly and point at the evidence.
+		w("# network egress WAS observed for this run (see above) — net none below will break this program.")
+		w("# review the observed endpoints/domains and remove net none if the program needs network access.")
+	} else {
+		w("# network syscalls are not yet observed; assume none. Remove if the program needs net.")
+	}
 	w("net none")
 	w("nonewprivs")
 	w("noroot")
