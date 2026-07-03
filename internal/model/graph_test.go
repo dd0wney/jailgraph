@@ -181,6 +181,73 @@ func TestEventToGraph_OpenCarriesMode(t *testing.T) {
 	}
 }
 
+func TestEventToGraph_Connect(t *testing.T) {
+	e := collector.BehaviorEvent{
+		Kind: collector.EventConnect, PID: 100, PPID: 1, Exe: "/usr/bin/curl",
+		DstIP: "93.184.216.34", DstPort: 443, Proto: "tcp", ConnCount: 3,
+	}
+	nodes, edges := EventToGraph("run1", e)
+
+	epKey := EndpointKey("93.184.216.34", 443)
+	var ep *Node
+	for i := range nodes {
+		if nodes[i].Key == epKey {
+			ep = &nodes[i]
+		}
+	}
+	if ep == nil {
+		t.Fatalf("no Endpoint node with key %q; nodes=%v", epKey, nodes)
+	}
+	if ep.Labels[0] != LabelEndpoint {
+		t.Errorf("label = %v, want %s", ep.Labels, LabelEndpoint)
+	}
+	if ep.Properties["ip"] != "93.184.216.34" || ep.Properties["port"] != uint16(443) || ep.Properties["proto"] != "tcp" {
+		t.Errorf("endpoint props = %v", ep.Properties)
+	}
+
+	found := false
+	for _, ed := range edges {
+		if ed.Type == EdgeConnected && ed.FromKey == ProcessKey("run1", 100) && ed.ToKey == epKey {
+			found = true
+			if ed.Properties["count"] != int64(3) {
+				t.Errorf("CONNECTED count = %v, want 3", ed.Properties["count"])
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no CONNECTED edge proc->endpoint; edges=%v", edges)
+	}
+}
+
+func TestEventToGraph_DNS(t *testing.T) {
+	e := collector.BehaviorEvent{
+		Kind: collector.EventDNS, PID: 100, Domain: "example.com", ResolveCount: 2,
+	}
+	nodes, edges := EventToGraph("run1", e)
+	dk := DomainKey("example.com")
+	var dn *Node
+	for i := range nodes {
+		if nodes[i].Key == dk {
+			dn = &nodes[i]
+		}
+	}
+	if dn == nil || dn.Labels[0] != LabelDomain || dn.Properties["name"] != "example.com" {
+		t.Fatalf("Domain node wrong: %v", nodes)
+	}
+	found := false
+	for _, ed := range edges {
+		if ed.Type == EdgeResolved && ed.FromKey == ProcessKey("run1", 100) && ed.ToKey == dk {
+			found = true
+			if ed.Properties["count"] != int64(2) {
+				t.Errorf("RESOLVED count = %v, want 2", ed.Properties["count"])
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no RESOLVED edge; edges=%v", edges)
+	}
+}
+
 func TestEventToGraph_FileActivityIsPerRunNodeWithNoProcessLeak(t *testing.T) {
 	e := collector.BehaviorEvent{
 		Kind: collector.EventFileActivity, Path: "/data/doc.txt",

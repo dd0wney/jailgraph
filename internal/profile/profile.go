@@ -50,22 +50,35 @@ type Behavior struct {
 	Binaries   []string        // observed exec'd binary paths
 	Caps       []string        // capabilities the program's actions required (eBPF only)
 	Namespaces []string        // namespace types the program created (eBPF only)
+	Endpoints  []string        // network destinations "ip:port" contacted (eBPF only)
+	Domains    []string        // DNS names queried (eBPF only)
 	Lossy      bool            // the trace dropped events; profile is unsafe
 	// FullCoverage is true only when the collector observed the COMPLETE syscall
 	// set (eBPF). It gates default-deny (least-privilege) seccomp generation: a
 	// default-deny profile from partial coverage would deny syscalls the program
 	// actually needs.
 	FullCoverage bool
+	// NetCapture is true only when the collector observed the network dimension
+	// (connects + DNS) — currently the eBPF backend only. Distinct from
+	// FullCoverage: it is the real per-run flag (Run node net_capture), not a
+	// syscall-coverage proxy. Consumers (e.g. malware's network category) must
+	// gate on this, not FullCoverage, to report the dimension absent correctly.
+	NetCapture bool
 }
 
 // Union merges several runs' behaviors into one — the way to build an
 // enforce-safe baseline, since a single run misses error/signal/rare-branch
 // paths. Set-valued fields union; Lossy is OR (any lossy run taints the result);
 // FullCoverage is AND (the union is full-coverage only if EVERY run was — an
-// eBPF run unioned with a seccomp run is partial).
+// eBPF run unioned with a seccomp run is partial). NetCapture is NOT merged:
+// the unioned Behavior is always treated as network-blind (conservative
+// default-false), since a mixed union can't honestly claim the net_capture
+// guarantee of every input run.
 func Union(runID string, behaviors ...Behavior) Behavior {
 	u := Behavior{RunID: runID, Syscalls: map[string]bool{}, FullCoverage: len(behaviors) > 0}
 	files, bins, caps, ns := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
+	eps := map[string]struct{}{}
+	doms := map[string]struct{}{}
 	for _, b := range behaviors {
 		for sc := range b.Syscalls {
 			u.Syscalls[sc] = true
@@ -74,6 +87,8 @@ func Union(runID string, behaviors ...Behavior) Behavior {
 		addAll(bins, b.Binaries)
 		addAll(caps, b.Caps)
 		addAll(ns, b.Namespaces)
+		addAll(eps, b.Endpoints)
+		addAll(doms, b.Domains)
 		u.Lossy = u.Lossy || b.Lossy
 		u.FullCoverage = u.FullCoverage && b.FullCoverage
 		if u.Target == "" {
@@ -84,6 +99,8 @@ func Union(runID string, behaviors ...Behavior) Behavior {
 	u.Binaries = sortedKeys(bins)
 	u.Caps = sortedKeys(caps)
 	u.Namespaces = sortedKeys(ns)
+	u.Endpoints = sortedKeys(eps)
+	u.Domains = sortedKeys(doms)
 	return u
 }
 
@@ -287,8 +304,29 @@ func RenderFirejail(b Behavior) string {
 	}
 	w("")
 
+	networkObserved := len(b.Endpoints) > 0 || len(b.Domains) > 0
+	if networkObserved {
+		w("# --- network destinations observed (informational) ---")
+		if len(b.Endpoints) > 0 {
+			w("# endpoints: %s", strings.Join(b.Endpoints, ", "))
+		}
+		if len(b.Domains) > 0 {
+			w("# domains:   %s", strings.Join(b.Domains, ", "))
+		}
+		w("")
+	}
+
 	w("# --- conservative DEFAULTS (not from observation) ---")
-	w("# network syscalls are not yet observed; assume none. Remove if the program needs net.")
+	if networkObserved {
+		// The generic "not yet observed" claim would be false here — the run DID
+		// contact the network (see the observed destinations above), so `net
+		// none` as-is will break the program. Keep the conservative default but
+		// say so honestly and point at the evidence.
+		w("# network egress WAS observed for this run (see above) — net none below will break this program.")
+		w("# review the observed endpoints/domains and remove net none if the program needs network access.")
+	} else {
+		w("# network syscalls are not yet observed; assume none. Remove if the program needs net.")
+	}
 	w("net none")
 	w("nonewprivs")
 	w("noroot")

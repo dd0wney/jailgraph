@@ -22,6 +22,7 @@
 #define EVENT_NS 4
 #define EVENT_RENAME 5
 #define EVENT_UNLINK 6
+#define EVENT_DNS 7
 
 // FMODE_WRITE is a fmode_t bit (uapi, not a BTF type) — set when a file is
 // opened for writing.
@@ -120,6 +121,34 @@ struct {
 	__type(key, __u64);
 	__type(value, struct write_stat);
 } write_stats SEC(".maps");
+
+// conn_stats: (tgid, family, dport, daddr) -> attempt count + protocol. Egress
+// connections are folded IN-KERNEL like write_stats/seen (never streamed): a
+// beaconing loop must not flood the ringbuf. Read out at teardown. Phase 1 is
+// AF_INET/AF_INET6 only (AF_UNIX is local IPC, skipped). Records connect
+// ATTEMPTS (the hook fires pre-connect), which is the C2 signal regardless of
+// success.
+struct conn_key {
+	__u32 tgid;
+	__u32 family;
+	__u16 dport;   // host-order? NO — stored network-order; userspace ntohs.
+	__u16 _pad;
+	__u8  daddr[16]; // v4 in first 4 bytes, or full v6
+};
+struct conn_stat {
+	__u64 count;
+	__u32 proto;
+	__u32 _pad;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1 << 12);
+	__type(key, struct conn_key);
+	__type(value, struct conn_stat);
+} conn_stats SEC(".maps");
+
+#define AF_INET  2
+#define AF_INET6 10
 
 SEC("raw_tracepoint/sys_enter")
 int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
@@ -352,6 +381,102 @@ int BPF_PROG(handle_unshare, unsigned long unshare_flags)
 	e->ppid = 0;
 	e->flags = nsbits;
 	e->path[0] = 0;
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+// handle_connect folds one egress connect attempt per (tgid, destination). The
+// port is stored network-order and byte-swapped in userspace (bpf has no htons
+// on a __be16 field without pulling in extra headers; the raw bytes round-trip).
+SEC("fentry/security_socket_connect")
+int BPF_PROG(handle_connect, struct socket *sock, struct sockaddr *address, int addrlen)
+{
+	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
+	if (!bpf_map_lookup_elem(&tracked, &tgid))
+		return 0;
+
+	__u16 family = 0;
+	bpf_probe_read_kernel(&family, sizeof(family), &address->sa_family);
+	if (family != AF_INET && family != AF_INET6)
+		return 0; // AF_UNIX and others are out of phase-1 scope
+
+	struct conn_key k = {};
+	k.tgid = tgid;
+	k.family = family;
+	if (family == AF_INET) {
+		struct sockaddr_in *sin = (struct sockaddr_in *)address;
+		bpf_probe_read_kernel(&k.dport, sizeof(k.dport), &sin->sin_port);
+		bpf_probe_read_kernel(&k.daddr, 4, &sin->sin_addr.s_addr);
+	} else {
+		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)address;
+		bpf_probe_read_kernel(&k.dport, sizeof(k.dport), &sin6->sin6_port);
+		bpf_probe_read_kernel(&k.daddr, 16, &sin6->sin6_addr);
+	}
+
+	__u32 proto = 0;
+	struct sock *sk = BPF_CORE_READ(sock, sk);
+	if (sk)
+		proto = BPF_CORE_READ(sk, sk_protocol);
+
+	struct conn_stat *st = bpf_map_lookup_elem(&conn_stats, &k);
+	if (st) {
+		st->count += 1;
+	} else {
+		struct conn_stat init = {};
+		init.count = 1;
+		init.proto = proto;
+		bpf_map_update_elem(&conn_stats, &k, &init, BPF_ANY);
+	}
+	return 0;
+}
+
+#define DNS_PORT 53
+#define DNS_SAMPLE_LEN 256
+
+// handle_dns_send samples outbound UDP payloads to port 53 (DNS queries). Like
+// rename/unlink it STREAMS raw bytes over the ringbuf; userspace parses the
+// qname (label decompression is not verifier-friendly). Connected and
+// unconnected resolvers both traverse udp_sendmsg. DoT/DoH/DNS-over-TCP are NOT
+// captured (documented blind spot) — DoH looks like ordinary TLS egress.
+SEC("fentry/udp_sendmsg")
+int BPF_PROG(handle_dns_send, struct sock *sk, struct msghdr *msg, size_t len)
+{
+	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
+	if (!bpf_map_lookup_elem(&tracked, &tgid))
+		return 0;
+
+	// Destination port: for a connected socket it is sk->sk_dport (network
+	// order); unconnected sends carry it in msg->msg_name. Cover the common
+	// connected-resolver path via sk_dport.
+	__u16 dport_be = BPF_CORE_READ(sk, __sk_common.skc_dport);
+	__u16 dport = (dport_be << 8) | (dport_be >> 8);
+	if (dport != DNS_PORT)
+		return 0;
+
+	// Copy up to DNS_SAMPLE_LEN bytes from the first iovec. msg_iter carries the
+	// user buffer; read its base ptr and length defensively.
+	struct iov_iter *iter = &msg->msg_iter;
+	const struct iovec *iov = BPF_CORE_READ(iter, __iov);
+	if (!iov)
+		return 0;
+	void *base = BPF_CORE_READ(iov, iov_base);
+	__u64 iov_len = BPF_CORE_READ(iov, iov_len);
+	if (!base || iov_len == 0)
+		return 0;
+
+	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e)
+		return 0;
+	e->kind = EVENT_DNS;
+	e->pid = tgid;
+	e->ppid = 0;
+	e->path[0] = 0;
+	__u32 n = iov_len < DNS_SAMPLE_LEN ? (__u32)iov_len : DNS_SAMPLE_LEN;
+	if (bpf_probe_read_user(e->path, DNS_SAMPLE_LEN, base) != 0) {
+		bpf_ringbuf_discard(e, 0);
+		return 0;
+	}
+	e->flags = n; // sampled length; userspace parses path[:flags]
 	bpf_ringbuf_submit(e, 0);
 	return 0;
 }

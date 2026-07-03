@@ -211,6 +211,47 @@ func TestFlush_EmptyGraph(t *testing.T) {
 	}
 }
 
+func TestCreateRunNode_NetCapture(t *testing.T) {
+	tests := []struct {
+		name       string
+		netCapture bool
+		binary     string
+		want       bool
+	}{
+		{"ebpf sets net_capture true", true, "/usr/bin/curl", true},
+		// seccomp/esf/replay sessions never set NetCapture; the Run node must
+		// record that explicitly (false), not omit the property.
+		{"seccomp defaults false", false, "/bin/sh", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeClient{}
+			w := NewWorker(f, quietLogger())
+			sess := run.New(tt.binary, time.Unix(0, 0))
+			sess.NetCapture = tt.netCapture
+
+			if err := w.createRunNode(context.Background(), sess); err != nil {
+				t.Fatalf("createRunNode: %v", err)
+			}
+
+			var runNode graphdb.NodeRequest
+			var found bool
+			for i := range f.createdNodes {
+				if len(f.createdNodes[i].Labels) == 1 && f.createdNodes[i].Labels[0] == model.LabelRun {
+					runNode = f.createdNodes[i]
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("Run node not created")
+			}
+			if nc, ok := runNode.Properties["net_capture"].(bool); !ok || nc != tt.want {
+				t.Errorf("net_capture property = %v, want %v (present, not absent)", runNode.Properties["net_capture"], tt.want)
+			}
+		})
+	}
+}
+
 func TestFlush_ChunkingAcrossMultipleBatches(t *testing.T) {
 	// batchSize 2 with a sample graph (>2 nodes) must create every node across
 	// multiple batches and resolve all edges.

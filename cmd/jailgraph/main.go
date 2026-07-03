@@ -449,6 +449,9 @@ func runLearn(argv []string) error {
 	// are partial (a tight default-deny profile needs full coverage).
 	if *replay == "" && *collectorK == "ebpf" {
 		sess.Coverage = run.CoverageFull
+		// Only the eBPF backend observes network egress (connects + DNS);
+		// seccomp and macOS esf remain network-blind.
+		sess.NetCapture = true
 	} else {
 		sess.Coverage = run.CoveragePartial
 	}

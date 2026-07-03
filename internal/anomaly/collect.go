@@ -69,15 +69,25 @@ func Collect(ctx context.Context, client GraphClient, candidateRunID, baselineTa
 		population = append(population, b)
 	}
 
-	return cand, buildBaseline(target, cand.FullCoverage, population, lossyExcluded), nil
+	return cand, buildBaseline(target, cand.FullCoverage, cand.NetCapture, population, lossyExcluded), nil
 }
 
-func buildBaseline(target string, candFull bool, pop []profile.Behavior, lossyExcluded int) Baseline {
+func buildBaseline(target string, candFull, candNet bool, pop []profile.Behavior, lossyExcluded int) Baseline {
 	// Syscalls/caps are only comparable across the candidate's coverage class.
 	sameCov := filterBeh(pop, func(b profile.Behavior) bool { return b.FullCoverage == candFull })
 	var capRuns []profile.Behavior
 	if candFull { // caps are observed only on full-coverage (eBPF) runs
 		capRuns = filterBeh(pop, func(b profile.Behavior) bool { return b.FullCoverage })
+	}
+	// Endpoints are observed only on network-capable (net_capture) runs — the
+	// real per-run flag, NOT the FullCoverage coverage-class proxy. A run can be
+	// full-coverage (eBPF) yet predate net_capture (NetCapture=false); gating on
+	// FullCoverage would let that network-blind run into the baseline and make
+	// every ordinary endpoint the candidate saw read as "novel". Compare only
+	// within the candidate's net_capture class, mirroring syscalls/caps.
+	var netRuns []profile.Behavior
+	if candNet {
+		netRuns = filterBeh(pop, func(b profile.Behavior) bool { return b.NetCapture })
 	}
 	return Baseline{
 		Target:                target,
@@ -85,6 +95,7 @@ func buildBaseline(target string, candFull bool, pop []profile.Behavior, lossyEx
 		Caps:                  buildDim(capRuns, func(b profile.Behavior) []string { return b.Caps }),
 		Binaries:              buildDim(pop, func(b profile.Behavior) []string { return b.Binaries }),
 		Files:                 buildDim(pop, func(b profile.Behavior) []string { return normalizeAll(b.Files) }),
+		Endpoints:             buildDim(netRuns, func(b profile.Behavior) []string { return b.Endpoints }),
 		TotalRuns:             len(pop),
 		LossyExcluded:         lossyExcluded,
 		CandidateFullCoverage: candFull,

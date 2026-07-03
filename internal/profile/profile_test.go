@@ -299,6 +299,44 @@ func TestUnion_MergesAndCoverageIsAND(t *testing.T) {
 	}
 }
 
+func TestRenderFirejail_SurfacesObservedNetworkDestinations(t *testing.T) {
+	b := sampleBehavior()
+	b.Endpoints = []string{"93.184.216.34:443", "1.1.1.1:53"}
+	b.Domains = []string{"example.com"}
+	out := RenderFirejail(b)
+
+	if !strings.Contains(out, "network destinations observed") {
+		t.Errorf("expected an informational network-destinations block; got:\n%s", out)
+	}
+	if !strings.Contains(out, "93.184.216.34:443") || !strings.Contains(out, "1.1.1.1:53") {
+		t.Errorf("expected observed endpoints listed; got:\n%s", out)
+	}
+	if !strings.Contains(out, "example.com") {
+		t.Errorf("expected observed domain listed; got:\n%s", out)
+	}
+	// The stale "not yet observed" comment must not survive once egress WAS observed.
+	if strings.Contains(out, "network syscalls are not yet observed") {
+		t.Errorf("stale not-observed comment must not appear when network egress was observed; got:\n%s", out)
+	}
+	// net none is still the conservative default, but with an honest caveat.
+	if !strings.Contains(out, "net none") {
+		t.Error("net none must still be the conservative default")
+	}
+	if !strings.Contains(out, "will break") {
+		t.Errorf("expected a caveat that net none will break this program; got:\n%s", out)
+	}
+}
+
+func TestRenderFirejail_NoNetworkKeepsStaleCommentHonest(t *testing.T) {
+	out := RenderFirejail(sampleBehavior()) // no Endpoints/Domains observed
+	if strings.Contains(out, "network destinations observed") {
+		t.Errorf("no informational block expected when nothing was observed; got:\n%s", out)
+	}
+	if !strings.Contains(out, "network syscalls are not yet observed; assume none") {
+		t.Errorf("expected the no-network comment to remain when nothing was observed; got:\n%s", out)
+	}
+}
+
 func TestRenderFirejail_LossyWarning(t *testing.T) {
 	b := sampleBehavior()
 	b.Lossy = true

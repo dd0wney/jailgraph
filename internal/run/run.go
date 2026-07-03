@@ -30,6 +30,10 @@ type Session struct {
 	// "partial" coverage (no full syscall set, hence no profile generation); the
 	// seccomp backend has neither.
 	WriteCapture bool
+	// NetCapture records whether the collector observed network egress
+	// (connects + DNS). Only the eBPF backend sets it; seccomp and macOS esf do
+	// not observe the network dimension. Distinct from WriteCapture/Coverage.
+	NetCapture bool
 	// Dropped maps a human-readable event-kind name to the number of events of
 	// that kind the buffer dropped.
 	Dropped map[string]int64

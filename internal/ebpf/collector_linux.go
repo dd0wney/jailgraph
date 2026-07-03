@@ -43,6 +43,9 @@ const (
 	evUnlink uint32 = 6
 )
 
+// evDNS (7) matches EVENT_DNS in trace.bpf.c; defined in dns.go alongside the
+// platform-neutral qname parser so both live in one place.
+
 // rawEvent mirrors `struct event` in trace.bpf.c (all fields 4-byte aligned).
 type rawEvent struct {
 	Kind  uint32
@@ -94,6 +97,16 @@ type ebpfCollector struct {
 	// ringbuf goroutine has finished — see the <-ringbufDone barrier), so no lock
 	// is needed.
 	fileAgg map[string]*fileStat
+
+	// dnsAgg folds DNS queries per (pid, name). Written only by the ringbuf
+	// goroutine; read in finalize after <-ringbufDone (no lock needed).
+	dnsAgg map[dnsKey]int64
+}
+
+// dnsKey identifies one folded (process, queried-name) pair.
+type dnsKey struct {
+	pid  int32
+	name string
 }
 
 // NewCollector returns an eBPF-backed Collector for target.
@@ -155,6 +168,7 @@ func (c *ebpfCollector) Start(ctx context.Context) (<-chan collector.BehaviorEve
 	c.links = append(c.links, unshareLink)
 	// fentry on vfs_write / security_inode_rename / security_inode_unlink: the
 	// ransomware-signal capture (write volume per inode + extension churn).
+	// security_socket_connect: the egress-connect (network) signal.
 	for _, h := range []struct {
 		name string
 		prog *ebpf.Program
@@ -162,6 +176,8 @@ func (c *ebpfCollector) Start(ctx context.Context) (<-chan collector.BehaviorEve
 		{"vfs_write", c.objs.HandleWrite},
 		{"security_inode_rename", c.objs.HandleRename},
 		{"security_inode_unlink", c.objs.HandleUnlink},
+		{"security_socket_connect", c.objs.HandleConnect},
+		{"udp_sendmsg", c.objs.HandleDnsSend},
 	} {
 		l, err := link.AttachTracing(link.TracingOptions{Program: h.prog})
 		if err != nil {
@@ -191,6 +207,7 @@ func (c *ebpfCollector) Start(ctx context.Context) (<-chan collector.BehaviorEve
 	c.childDone = make(chan struct{})
 	c.ringbufDone = make(chan struct{})
 	c.fileAgg = make(map[string]*fileStat)
+	c.dnsAgg = make(map[dnsKey]int64)
 
 	go func() {
 		c.once.Do(func() { c.waitErr = c.cmd.Wait() })
@@ -266,6 +283,18 @@ func (c *ebpfCollector) toBehaviors(ev rawEvent) []collector.BehaviorEvent {
 	case evUnlink:
 		c.bumpChurn(cstr(ev.Path[:]), 0, 1)
 		return nil
+	case evDNS:
+		n := int(ev.Flags)
+		if n > len(ev.Path) {
+			n = len(ev.Path)
+		}
+		name, err := parseDNSQName(ev.Path[:n])
+		if err != nil {
+			c.emitErr(fmt.Errorf("parse dns query (pid %d): %w", ev.Pid, err))
+			return nil
+		}
+		c.bumpDNS(int32(ev.Pid), name)
+		return nil // folded; emitted as EventDNS at teardown
 	}
 	return nil
 }
@@ -283,6 +312,15 @@ func (c *ebpfCollector) bumpChurn(name string, renames, unlinks int64) {
 	}
 	st.renames += renames
 	st.unlinks += unlinks
+}
+
+// bumpDNS folds a streamed DNS query into the per-(pid,name) aggregate. Called
+// only from the ringbuf goroutine.
+func (c *ebpfCollector) bumpDNS(pid int32, name string) {
+	if name == "" {
+		return
+	}
+	c.dnsAgg[dnsKey{pid, name}]++
 }
 
 // cstr converts a NUL-terminated C char array to a Go string.
@@ -378,6 +416,32 @@ func (c *ebpfCollector) finalize(ctx context.Context) {
 	for _, be := range foldFileActivity(c.fileAgg, writes) {
 		be.Timestamp = time.Now()
 		c.emit(be)
+	}
+
+	// Materialize folded egress connects: one EventConnect per (process,
+	// destination). Like write_stats, the hot connect path was folded in-kernel;
+	// we read the count out here. Safe to touch after <-ringbufDone.
+	var ck traceConnKey
+	var cs traceConnStat
+	cit2 := c.objs.ConnStats.Iterate()
+	for cit2.Next(&ck, &cs) {
+		be := connToBehavior(
+			connKey{TGID: ck.Tgid, Family: ck.Family, Port: ntohs(ck.Dport), Addr: ck.Daddr},
+			connStat{Count: cs.Count, Proto: cs.Proto},
+		)
+		be.Timestamp = time.Now()
+		c.emit(be)
+	}
+	if err := cit2.Err(); err != nil {
+		c.emitErr(fmt.Errorf("iterate conn_stats map: %w", err))
+	}
+
+	// Emit folded DNS queries: one EventDNS per (process, name) with its count.
+	for k, count := range c.dnsAgg {
+		c.emit(collector.BehaviorEvent{
+			Kind: collector.EventDNS, PID: k.pid, Domain: k.name,
+			ResolveCount: count, Timestamp: time.Now(),
+		})
 	}
 }
 
