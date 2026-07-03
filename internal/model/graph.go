@@ -161,8 +161,8 @@ func EventToGraph(runID string, e collector.BehaviorEvent) ([]Node, []Edge) {
 		// exactly one RESOLVED edge exists per pair with the full count.
 		dk := DomainKey(e.Domain)
 		nodes = append(nodes, Node{
-			Key:    dk,
-			Labels: []string{LabelDomain},
+			Key:        dk,
+			Labels:     []string{LabelDomain},
 			Properties: map[string]any{"name": e.Domain, PropKey: dk},
 		})
 		count := e.ResolveCount
