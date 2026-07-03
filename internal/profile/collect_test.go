@@ -139,6 +139,28 @@ func TestCollect_ZeroProcessesIsEmptyNotError(t *testing.T) {
 	}
 }
 
+func TestCollect_Endpoints(t *testing.T) {
+	// The Endpoint neighbor's port arrives as float64, mirroring a real JSON
+	// read-back from graphdb (see toPort).
+	g := stubGraph{
+		runs:  []*graphdb.NodeResponse{runNode()},
+		procs: []*graphdb.NodeResponse{procNode()},
+		neighbors: []*graphdb.NodeResponse{
+			{ID: 30, Labels: []string{model.LabelEndpoint}, Properties: map[string]any{
+				"ip": "93.184.216.34", "port": float64(443), "proto": "tcp",
+			}},
+		},
+	}
+	b, err := Collect(context.Background(), g, "r1", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "93.184.216.34:443"
+	if len(b.Endpoints) != 1 || b.Endpoints[0] != want {
+		t.Errorf("Endpoints = %v, want [%s]", b.Endpoints, want)
+	}
+}
+
 func TestCollect_TolerantOfMalformedProperties(t *testing.T) {
 	// Neighbors with missing labels, missing properties, and a non-string value
 	// must be skipped without panicking.

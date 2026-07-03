@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/dd0wney/jailgraph/internal/graphdb"
@@ -60,6 +61,7 @@ func Collect(ctx context.Context, client GraphClient, runID string, pageLimit in
 	binSet := map[string]struct{}{}
 	capSet := map[string]struct{}{}
 	nsSet := map[string]struct{}{}
+	endpointSet := map[string]struct{}{}
 	for _, p := range procs {
 		key, _ := p.Properties[model.PropKey].(string)
 		if !strings.HasPrefix(key, procPrefix) {
@@ -70,18 +72,19 @@ func Collect(ctx context.Context, client GraphClient, runID string, pageLimit in
 			return b, fmt.Errorf("traverse process %d: %w", p.ID, err)
 		}
 		for _, n := range neighbors {
-			bucket(n, b.Syscalls, fileSet, binSet, capSet, nsSet)
+			bucket(n, b.Syscalls, fileSet, binSet, capSet, nsSet, endpointSet)
 		}
 	}
 	b.Files = sortedKeys(fileSet)
 	b.Binaries = sortedKeys(binSet)
 	b.Caps = sortedKeys(capSet)
 	b.Namespaces = sortedKeys(nsSet)
+	b.Endpoints = sortedKeys(endpointSet)
 	return b, nil
 }
 
 // bucket sorts a traversed neighbor into the right behavior set by its label.
-func bucket(n *graphdb.NodeResponse, syscalls map[string]bool, files, bins, caps, namespaces map[string]struct{}) {
+func bucket(n *graphdb.NodeResponse, syscalls map[string]bool, files, bins, caps, namespaces, endpoints map[string]struct{}) {
 	if len(n.Labels) == 0 {
 		return
 	}
@@ -106,6 +109,27 @@ func bucket(n *graphdb.NodeResponse, syscalls map[string]bool, files, bins, caps
 		if t, _ := n.Properties["type"].(string); t != "" {
 			namespaces[t] = struct{}{}
 		}
+	case model.LabelEndpoint:
+		ip, _ := n.Properties["ip"].(string)
+		port := toPort(n.Properties["port"])
+		if ip != "" {
+			endpoints[ip+":"+strconv.Itoa(int(port))] = struct{}{}
+		}
+	}
+}
+
+// toPort coerces a graph port property (float64 from JSON, or a native int) to
+// uint16.
+func toPort(v any) uint16 {
+	switch x := v.(type) {
+	case float64:
+		return uint16(x)
+	case int:
+		return uint16(x)
+	case uint16:
+		return x
+	default:
+		return 0
 	}
 }
 

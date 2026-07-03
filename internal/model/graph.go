@@ -134,6 +134,28 @@ func EventToGraph(runID string, e collector.BehaviorEvent) ([]Node, []Edge) {
 		})
 		edges = append(edges, Edge{Type: EdgeJoinedNS, FromKey: procKey, ToKey: nsKey})
 
+	case collector.EventConnect:
+		// The connect is pre-folded per (process, destination) by the collector,
+		// so exactly one CONNECTED edge exists per pair with the full count — the
+		// aggregator's non-INVOKED dedup preserves it as-is (no summation needed),
+		// matching how FileActivity is pre-folded.
+		epKey := EndpointKey(e.DstIP, e.DstPort)
+		nodes = append(nodes, Node{
+			Key:    epKey,
+			Labels: []string{LabelEndpoint},
+			Properties: map[string]any{
+				"ip": e.DstIP, "port": e.DstPort, "proto": e.Proto, PropKey: epKey,
+			},
+		})
+		count := e.ConnCount
+		if count == 0 {
+			count = 1
+		}
+		edges = append(edges, Edge{
+			Type: EdgeConnected, FromKey: procKey, ToKey: epKey,
+			Properties: map[string]any{"count": count},
+		})
+
 	case collector.EventSpawn, collector.EventSyscall:
 		// Process node + INVOKED (above) already capture these; the SPAWNED edge
 		// is derived from PPID linkage, not the clone notification.

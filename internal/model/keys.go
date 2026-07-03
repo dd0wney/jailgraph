@@ -34,14 +34,18 @@ const (
 	// one file. Unlike the content-keyed (shared) File node, it is scoped to a run
 	// (its key embeds the run id) so per-run write volume never merges across runs.
 	LabelFileActivity = "FileActivity"
+	// LabelEndpoint is a network destination (ip, port). Content-keyed like
+	// Binary/File: the same host contacted across runs is one shared node.
+	LabelEndpoint = "Endpoint"
 
-	EdgePartOf   = "PART_OF"
-	EdgeSpawned  = "SPAWNED"
-	EdgeExec     = "EXEC"
-	EdgeInvoked  = "INVOKED"
-	EdgeOpened   = "OPENED"
-	EdgeHeldCap  = "HELD_CAP"
-	EdgeJoinedNS = "JOINED_NS"
+	EdgePartOf    = "PART_OF"
+	EdgeSpawned   = "SPAWNED"
+	EdgeExec      = "EXEC"
+	EdgeInvoked   = "INVOKED"
+	EdgeOpened    = "OPENED"
+	EdgeHeldCap   = "HELD_CAP"
+	EdgeJoinedNS  = "JOINED_NS"
+	EdgeConnected = "CONNECTED"
 )
 
 // RunKey identifies a single learning session.
@@ -81,6 +85,13 @@ func FileActivityKey(runID, path string) string {
 // profile.Collect enumerates a run's processes).
 func FileActivityPrefix(runID string) string {
 	return "fileio:" + runID + ":"
+}
+
+// EndpointKey identifies a network destination by IP and port. Content-keyed
+// (shared across runs like File/Binary) — cross-run endpoint identity is the
+// point (the same C2 host contacted by two runs is one node).
+func EndpointKey(ip string, port uint16) string {
+	return "endpoint:" + ip + ":" + strconv.Itoa(int(port))
 }
 
 // CapKey identifies a Linux capability by name (e.g. "CAP_SYS_ADMIN").

@@ -181,6 +181,44 @@ func TestEventToGraph_OpenCarriesMode(t *testing.T) {
 	}
 }
 
+func TestEventToGraph_Connect(t *testing.T) {
+	e := collector.BehaviorEvent{
+		Kind: collector.EventConnect, PID: 100, PPID: 1, Exe: "/usr/bin/curl",
+		DstIP: "93.184.216.34", DstPort: 443, Proto: "tcp", ConnCount: 3,
+	}
+	nodes, edges := EventToGraph("run1", e)
+
+	epKey := EndpointKey("93.184.216.34", 443)
+	var ep *Node
+	for i := range nodes {
+		if nodes[i].Key == epKey {
+			ep = &nodes[i]
+		}
+	}
+	if ep == nil {
+		t.Fatalf("no Endpoint node with key %q; nodes=%v", epKey, nodes)
+	}
+	if ep.Labels[0] != LabelEndpoint {
+		t.Errorf("label = %v, want %s", ep.Labels, LabelEndpoint)
+	}
+	if ep.Properties["ip"] != "93.184.216.34" || ep.Properties["port"] != uint16(443) || ep.Properties["proto"] != "tcp" {
+		t.Errorf("endpoint props = %v", ep.Properties)
+	}
+
+	found := false
+	for _, ed := range edges {
+		if ed.Type == EdgeConnected && ed.FromKey == ProcessKey("run1", 100) && ed.ToKey == epKey {
+			found = true
+			if ed.Properties["count"] != int64(3) {
+				t.Errorf("CONNECTED count = %v, want 3", ed.Properties["count"])
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no CONNECTED edge proc->endpoint; edges=%v", edges)
+	}
+}
+
 func TestEventToGraph_FileActivityIsPerRunNodeWithNoProcessLeak(t *testing.T) {
 	e := collector.BehaviorEvent{
 		Kind: collector.EventFileActivity, Path: "/data/doc.txt",
