@@ -58,6 +58,12 @@ type Behavior struct {
 	// default-deny profile from partial coverage would deny syscalls the program
 	// actually needs.
 	FullCoverage bool
+	// NetCapture is true only when the collector observed the network dimension
+	// (connects + DNS) — currently the eBPF backend only. Distinct from
+	// FullCoverage: it is the real per-run flag (Run node net_capture), not a
+	// syscall-coverage proxy. Consumers (e.g. malware's network category) must
+	// gate on this, not FullCoverage, to report the dimension absent correctly.
+	NetCapture bool
 }
 
 // Union merges several runs' behaviors into one — the way to build an

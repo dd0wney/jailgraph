@@ -139,6 +139,37 @@ func TestCollect_ZeroProcessesIsEmptyNotError(t *testing.T) {
 	}
 }
 
+func TestCollect_NetCapture(t *testing.T) {
+	// net_capture is a real per-run flag (Run node property), not derived from
+	// coverage: an eBPF run could in principle set coverage=full without
+	// net_capture (e.g. future backend variance), so this must read the
+	// dedicated property, not piggyback on FullCoverage.
+	tests := []struct {
+		name  string
+		props map[string]any
+		want  bool
+	}{
+		{"true", map[string]any{"id": "r1", "coverage": "full", "net_capture": true}, true},
+		{"false", map[string]any{"id": "r1", "coverage": "full", "net_capture": false}, false},
+		{"absent defaults false", map[string]any{"id": "r1", "coverage": "full"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := stubGraph{
+				runs:  []*graphdb.NodeResponse{{ID: 1, Labels: []string{model.LabelRun}, Properties: tt.props}},
+				procs: []*graphdb.NodeResponse{procNode()},
+			}
+			b, err := Collect(context.Background(), g, "r1", 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if b.NetCapture != tt.want {
+				t.Errorf("NetCapture = %v, want %v", b.NetCapture, tt.want)
+			}
+		})
+	}
+}
+
 func TestCollect_Endpoints(t *testing.T) {
 	// The Endpoint neighbor's port arrives as float64, mirroring a real JSON
 	// read-back from graphdb (see toPort).

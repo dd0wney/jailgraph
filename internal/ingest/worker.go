@@ -134,6 +134,7 @@ func (w *Worker) createRunNode(ctx context.Context, sess *run.Session) error {
 		"lossy":         sess.Lossy,
 		"coverage":      coverage,
 		"write_capture": sess.WriteCapture,
+		"net_capture":   sess.NetCapture,
 		model.PropKey:   key,
 	}
 	if !sess.EndedAt.IsZero() {
