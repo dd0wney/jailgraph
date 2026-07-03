@@ -13,6 +13,22 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type traceConnKey struct {
+	_      structs.HostLayout
+	Tgid   uint32
+	Family uint32
+	Dport  uint16
+	Pad    uint16
+	Daddr  [16]uint8
+}
+
+type traceConnStat struct {
+	_     structs.HostLayout
+	Count uint64
+	Proto uint32
+	Pad   uint32
+}
+
 type tracePathBuf struct {
 	_    structs.HostLayout
 	Path [256]int8
@@ -70,6 +86,7 @@ type traceSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type traceProgramSpecs struct {
 	HandleCap      *ebpf.ProgramSpec `ebpf:"handle_cap"`
+	HandleConnect  *ebpf.ProgramSpec `ebpf:"handle_connect"`
 	HandleExec     *ebpf.ProgramSpec `ebpf:"handle_exec"`
 	HandleFork     *ebpf.ProgramSpec `ebpf:"handle_fork"`
 	HandleOpen     *ebpf.ProgramSpec `ebpf:"handle_open"`
@@ -84,6 +101,7 @@ type traceProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type traceMapSpecs struct {
+	ConnStats  *ebpf.MapSpec `ebpf:"conn_stats"`
 	Events     *ebpf.MapSpec `ebpf:"events"`
 	Launcher   *ebpf.MapSpec `ebpf:"launcher"`
 	Seen       *ebpf.MapSpec `ebpf:"seen"`
@@ -119,6 +137,7 @@ func (o *traceObjects) Close() error {
 //
 // It can be passed to loadTraceObjects or ebpf.CollectionSpec.LoadAndAssign.
 type traceMaps struct {
+	ConnStats  *ebpf.Map `ebpf:"conn_stats"`
 	Events     *ebpf.Map `ebpf:"events"`
 	Launcher   *ebpf.Map `ebpf:"launcher"`
 	Seen       *ebpf.Map `ebpf:"seen"`
@@ -130,6 +149,7 @@ type traceMaps struct {
 
 func (m *traceMaps) Close() error {
 	return _TraceClose(
+		m.ConnStats,
 		m.Events,
 		m.Launcher,
 		m.Seen,
@@ -151,6 +171,7 @@ type traceVariables struct {
 // It can be passed to loadTraceObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tracePrograms struct {
 	HandleCap      *ebpf.Program `ebpf:"handle_cap"`
+	HandleConnect  *ebpf.Program `ebpf:"handle_connect"`
 	HandleExec     *ebpf.Program `ebpf:"handle_exec"`
 	HandleFork     *ebpf.Program `ebpf:"handle_fork"`
 	HandleOpen     *ebpf.Program `ebpf:"handle_open"`
@@ -164,6 +185,7 @@ type tracePrograms struct {
 func (p *tracePrograms) Close() error {
 	return _TraceClose(
 		p.HandleCap,
+		p.HandleConnect,
 		p.HandleExec,
 		p.HandleFork,
 		p.HandleOpen,

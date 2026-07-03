@@ -155,6 +155,7 @@ func (c *ebpfCollector) Start(ctx context.Context) (<-chan collector.BehaviorEve
 	c.links = append(c.links, unshareLink)
 	// fentry on vfs_write / security_inode_rename / security_inode_unlink: the
 	// ransomware-signal capture (write volume per inode + extension churn).
+	// security_socket_connect: the egress-connect (network) signal.
 	for _, h := range []struct {
 		name string
 		prog *ebpf.Program
@@ -162,6 +163,7 @@ func (c *ebpfCollector) Start(ctx context.Context) (<-chan collector.BehaviorEve
 		{"vfs_write", c.objs.HandleWrite},
 		{"security_inode_rename", c.objs.HandleRename},
 		{"security_inode_unlink", c.objs.HandleUnlink},
+		{"security_socket_connect", c.objs.HandleConnect},
 	} {
 		l, err := link.AttachTracing(link.TracingOptions{Program: h.prog})
 		if err != nil {
@@ -378,6 +380,24 @@ func (c *ebpfCollector) finalize(ctx context.Context) {
 	for _, be := range foldFileActivity(c.fileAgg, writes) {
 		be.Timestamp = time.Now()
 		c.emit(be)
+	}
+
+	// Materialize folded egress connects: one EventConnect per (process,
+	// destination). Like write_stats, the hot connect path was folded in-kernel;
+	// we read the count out here. Safe to touch after <-ringbufDone.
+	var ck traceConnKey
+	var cs traceConnStat
+	cit2 := c.objs.ConnStats.Iterate()
+	for cit2.Next(&ck, &cs) {
+		be := connToBehavior(
+			connKey{TGID: ck.Tgid, Family: ck.Family, Port: ntohs(ck.Dport), Addr: ck.Daddr},
+			connStat{Count: cs.Count, Proto: cs.Proto},
+		)
+		be.Timestamp = time.Now()
+		c.emit(be)
+	}
+	if err := cit2.Err(); err != nil {
+		c.emitErr(fmt.Errorf("iterate conn_stats map: %w", err))
 	}
 }
 
