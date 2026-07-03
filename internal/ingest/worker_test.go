@@ -211,52 +211,44 @@ func TestFlush_EmptyGraph(t *testing.T) {
 	}
 }
 
-func TestCreateRunNode_WritesNetCaptureProperty(t *testing.T) {
-	f := &fakeClient{}
-	w := NewWorker(f, quietLogger())
-	sess := run.New("/usr/bin/curl", time.Unix(0, 0))
-	sess.NetCapture = true
+func TestCreateRunNode_NetCapture(t *testing.T) {
+	tests := []struct {
+		name       string
+		netCapture bool
+		binary     string
+		want       bool
+	}{
+		{"ebpf sets net_capture true", true, "/usr/bin/curl", true},
+		// seccomp/esf/replay sessions never set NetCapture; the Run node must
+		// record that explicitly (false), not omit the property.
+		{"seccomp defaults false", false, "/bin/sh", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeClient{}
+			w := NewWorker(f, quietLogger())
+			sess := run.New(tt.binary, time.Unix(0, 0))
+			sess.NetCapture = tt.netCapture
 
-	if err := w.createRunNode(context.Background(), sess); err != nil {
-		t.Fatalf("createRunNode: %v", err)
-	}
+			if err := w.createRunNode(context.Background(), sess); err != nil {
+				t.Fatalf("createRunNode: %v", err)
+			}
 
-	var runNode *graphdb.NodeRequest
-	for i := range f.createdNodes {
-		if len(f.createdNodes[i].Labels) == 1 && f.createdNodes[i].Labels[0] == model.LabelRun {
-			runNode = &f.createdNodes[i]
-		}
-	}
-	if runNode == nil {
-		t.Fatal("Run node not created")
-	}
-	if nc, ok := runNode.Properties["net_capture"].(bool); !ok || !nc {
-		t.Errorf("net_capture property = %v, want true", runNode.Properties["net_capture"])
-	}
-}
-
-func TestCreateRunNode_NetCaptureDefaultsFalse(t *testing.T) {
-	// seccomp/esf/replay sessions never set NetCapture; the Run node must record
-	// that explicitly (false), not omit the property.
-	f := &fakeClient{}
-	w := NewWorker(f, quietLogger())
-	sess := run.New("/bin/sh", time.Unix(0, 0))
-
-	if err := w.createRunNode(context.Background(), sess); err != nil {
-		t.Fatalf("createRunNode: %v", err)
-	}
-
-	var runNode *graphdb.NodeRequest
-	for i := range f.createdNodes {
-		if len(f.createdNodes[i].Labels) == 1 && f.createdNodes[i].Labels[0] == model.LabelRun {
-			runNode = &f.createdNodes[i]
-		}
-	}
-	if runNode == nil {
-		t.Fatal("Run node not created")
-	}
-	if nc, ok := runNode.Properties["net_capture"].(bool); !ok || nc {
-		t.Errorf("net_capture property = %v, want false (present, not true)", runNode.Properties["net_capture"])
+			var runNode graphdb.NodeRequest
+			var found bool
+			for i := range f.createdNodes {
+				if len(f.createdNodes[i].Labels) == 1 && f.createdNodes[i].Labels[0] == model.LabelRun {
+					runNode = f.createdNodes[i]
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("Run node not created")
+			}
+			if nc, ok := runNode.Properties["net_capture"].(bool); !ok || nc != tt.want {
+				t.Errorf("net_capture property = %v, want %v (present, not absent)", runNode.Properties["net_capture"], tt.want)
+			}
+		})
 	}
 }
 
