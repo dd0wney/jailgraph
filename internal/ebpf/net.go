@@ -79,6 +79,11 @@ func connToBehavior(k connKey, s connStat) collector.BehaviorEvent {
 // ntohs converts a network-byte-order 16-bit value (as read raw from the kernel
 // sockaddr) to host order. The kernel stores the port big-endian regardless of
 // host endianness.
+//
+// This assumes a little-endian (bpfel) eBPF target — correct today, since
+// that's the only target this collector builds for — but the byte-swap here
+// is unconditional, so a future bpfeb (big-endian) target would need this
+// reviewed (the raw value may already arrive in host order there).
 func ntohs(be uint16) uint16 {
 	return be<<8 | be>>8
 }

@@ -115,7 +115,7 @@ func bucket(n *graphdb.NodeResponse, syscalls map[string]bool, files, bins, caps
 	case model.LabelEndpoint:
 		ip, _ := n.Properties["ip"].(string)
 		port := toPort(n.Properties["port"])
-		if ip != "" {
+		if ip != "" && port != 0 {
 			endpoints[ip+":"+strconv.Itoa(int(port))] = struct{}{}
 		}
 	case model.LabelDomain:

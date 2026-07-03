@@ -96,6 +96,14 @@ Low priority: note whether this occurs in practice (small DNS queries are the
 common case, so this may fire often), but a single dropped query is much
 lower severity than DNS capture no-op'ing entirely (#1).
 
+### 4. DNS capture is IPv4-transport-only
+
+The hook is attached to `udp_sendmsg` only; a resolver that queries an IPv6
+nameserver goes through `udpv6_sendmsg` instead and is never hooked, yielding
+no :Domain node — the same silent-no-op signature as #1 (ITER_UBUF), so check
+`/etc/resolv.conf` for v6 nameservers before blaming ITER_UBUF. (`udpv6_sendmsg`
+capture is phase 2.)
+
 ---
 
 ## Functional validation scenarios
