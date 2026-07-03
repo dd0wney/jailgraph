@@ -16,7 +16,7 @@
 - **`golangci-lint` must pass before committing** (repo Go rule).
 - **Comments explain why, not what.** Match surrounding comment density/idiom.
 - **Platform-neutral collector logic** stays in files with NO `//go:build linux` tag (so `internal/collector` and the decode/parse helpers build+test on darwin too). Kernel-touching glue stays in `//go:build linux` files.
-- **eBPF bindings are committed:** after editing `internal/ebpf/bpf/trace.bpf.c`, regenerate with `make bpf-generate` (docker; needs no host clang) and commit the regenerated `trace_bpfel.go` + `trace_bpfel.o`. `go build` never invokes clang.
+- **eBPF bindings are committed:** after editing `internal/ebpf/bpf/trace.bpf.c`, regenerate and commit `trace_bpfel.go` + `trace_bpfel.o`. `go build` never invokes clang. Regenerate with `podman build --target bpf-artifacts --output internal/ebpf .` (this environment: docker daemon is down but podman 5.8 reproduces the artifacts byte-for-byte; `make bpf-generate` is the docker equivalent). Only the actual kernel-load runtime validation needs a privileged host — compile + unit tests verify here.
 - **Ports/addresses are network byte order in the kernel:** convert with `ntohs`/big-endian reads at the userspace boundary, never store raw `__be16`/`__be32`.
 - **Scope (phase 1):** AF_INET + AF_INET6 only (skip AF_UNIX); connect *attempts* (not success); no byte-volume accounting; no bind/listen/accept. macOS esf + seccomp backends report the network dimension absent.
 - **Honesty discipline:** every consumer reports the network dimension "not observable on this backend" when `NetCapture` is false, and excludes it from any "clean" verdict (absence of observability ≠ absence of signal).
@@ -301,7 +301,7 @@ int BPF_PROG(handle_connect, struct socket *sock, struct sockaddr *address, int 
 
 - [ ] **Step 6: Regenerate the committed bindings**
 
-Run: `make bpf-generate`
+Run: `podman build --target bpf-artifacts --output internal/ebpf .`  (docker daemon down here; podman reproduces artifacts byte-for-byte)
 Expected: `internal/ebpf/trace_bpfel.go` and `trace_bpfel.o` change; `traceObjects` now has `HandleConnect *ebpf.Program` and `ConnStats *ebpf.Map`; generated `traceConnKey`/`traceConnStat` structs appear.
 If docker/clang is unavailable in this environment, STOP and flag: this step and the two that follow require the toolchain (see Task 7 hardware runbook). Confirm the C compiles clean before proceeding.
 
@@ -858,7 +858,7 @@ int BPF_PROG(handle_dns_send, struct sock *sk, struct msghdr *msg, size_t len)
 
 - [ ] **Step 8: Regenerate bindings**
 
-Run: `make bpf-generate`
+Run: `podman build --target bpf-artifacts --output internal/ebpf .`  (docker daemon down here; podman reproduces artifacts byte-for-byte)
 Expected: `traceObjects` gains `HandleDnsSend *ebpf.Program`. Confirm clean compile.
 
 - [ ] **Step 9: Attach + decode EVENT_DNS in `internal/ebpf/collector_linux.go`**
