@@ -156,6 +156,24 @@ func EventToGraph(runID string, e collector.BehaviorEvent) ([]Node, []Edge) {
 			Properties: map[string]any{"count": count},
 		})
 
+	case collector.EventDNS:
+		// Like EventConnect, the collector pre-folds queries per (process, name);
+		// exactly one RESOLVED edge exists per pair with the full count.
+		dk := DomainKey(e.Domain)
+		nodes = append(nodes, Node{
+			Key:    dk,
+			Labels: []string{LabelDomain},
+			Properties: map[string]any{"name": e.Domain, PropKey: dk},
+		})
+		count := e.ResolveCount
+		if count == 0 {
+			count = 1
+		}
+		edges = append(edges, Edge{
+			Type: EdgeResolved, FromKey: procKey, ToKey: dk,
+			Properties: map[string]any{"count": count},
+		})
+
 	case collector.EventSpawn, collector.EventSyscall:
 		// Process node + INVOKED (above) already capture these; the SPAWNED edge
 		// is derived from PPID linkage, not the clone notification.

@@ -161,6 +161,24 @@ func TestCollect_Endpoints(t *testing.T) {
 	}
 }
 
+func TestCollect_Domains(t *testing.T) {
+	g := stubGraph{
+		runs:  []*graphdb.NodeResponse{runNode()},
+		procs: []*graphdb.NodeResponse{procNode()},
+		neighbors: []*graphdb.NodeResponse{
+			{ID: 31, Labels: []string{model.LabelDomain}, Properties: map[string]any{"name": "example.com"}},
+		},
+	}
+	b, err := Collect(context.Background(), g, "r1", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "example.com"
+	if len(b.Domains) != 1 || b.Domains[0] != want {
+		t.Errorf("Domains = %v, want [%s]", b.Domains, want)
+	}
+}
+
 func TestCollect_TolerantOfMalformedProperties(t *testing.T) {
 	// Neighbors with missing labels, missing properties, and a non-string value
 	// must be skipped without panicking.

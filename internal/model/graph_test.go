@@ -219,6 +219,35 @@ func TestEventToGraph_Connect(t *testing.T) {
 	}
 }
 
+func TestEventToGraph_DNS(t *testing.T) {
+	e := collector.BehaviorEvent{
+		Kind: collector.EventDNS, PID: 100, Domain: "example.com", ResolveCount: 2,
+	}
+	nodes, edges := EventToGraph("run1", e)
+	dk := DomainKey("example.com")
+	var dn *Node
+	for i := range nodes {
+		if nodes[i].Key == dk {
+			dn = &nodes[i]
+		}
+	}
+	if dn == nil || dn.Labels[0] != LabelDomain || dn.Properties["name"] != "example.com" {
+		t.Fatalf("Domain node wrong: %v", nodes)
+	}
+	found := false
+	for _, ed := range edges {
+		if ed.Type == EdgeResolved && ed.FromKey == ProcessKey("run1", 100) && ed.ToKey == dk {
+			found = true
+			if ed.Properties["count"] != int64(2) {
+				t.Errorf("RESOLVED count = %v, want 2", ed.Properties["count"])
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no RESOLVED edge; edges=%v", edges)
+	}
+}
+
 func TestEventToGraph_FileActivityIsPerRunNodeWithNoProcessLeak(t *testing.T) {
 	e := collector.BehaviorEvent{
 		Kind: collector.EventFileActivity, Path: "/data/doc.txt",

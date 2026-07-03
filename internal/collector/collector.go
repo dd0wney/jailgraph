@@ -50,6 +50,10 @@ const (
 	// the backend, so ConnCount carries the attempt count (beaconing signal).
 	// eBPF (Linux) only; seccomp and macOS esf do not observe it.
 	EventConnect
+	// EventDNS is a DNS query (outbound UDP to port 53). Maps to a RESOLVED edge
+	// (Process -> Domain). Records that a name was queried, not what it resolved
+	// to. eBPF (Linux) only. DNS-over-TLS/HTTPS/TCP are not observed.
+	EventDNS
 )
 
 // String returns a stable lowercase name for the kind, used to label drop
@@ -72,6 +76,8 @@ func (k EventKind) String() string {
 		return "fileio"
 	case EventConnect:
 		return "connect"
+	case EventDNS:
+		return "dns"
 	default:
 		return "unknown"
 	}
@@ -135,6 +141,11 @@ type BehaviorEvent struct {
 	DstPort   uint16
 	Proto     string
 	ConnCount int64
+
+	// DNS (EventDNS). Domain is the queried name (lowercased); ResolveCount is the
+	// per-(process,name) query count folded by the backend.
+	Domain       string
+	ResolveCount int64
 
 	// Lossy is true when the producing pipeline dropped events before this one.
 	// It propagates to the Run node so a generated profile is never silently

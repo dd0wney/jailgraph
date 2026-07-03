@@ -62,6 +62,7 @@ func Collect(ctx context.Context, client GraphClient, runID string, pageLimit in
 	capSet := map[string]struct{}{}
 	nsSet := map[string]struct{}{}
 	endpointSet := map[string]struct{}{}
+	domainSet := map[string]struct{}{}
 	for _, p := range procs {
 		key, _ := p.Properties[model.PropKey].(string)
 		if !strings.HasPrefix(key, procPrefix) {
@@ -72,7 +73,7 @@ func Collect(ctx context.Context, client GraphClient, runID string, pageLimit in
 			return b, fmt.Errorf("traverse process %d: %w", p.ID, err)
 		}
 		for _, n := range neighbors {
-			bucket(n, b.Syscalls, fileSet, binSet, capSet, nsSet, endpointSet)
+			bucket(n, b.Syscalls, fileSet, binSet, capSet, nsSet, endpointSet, domainSet)
 		}
 	}
 	b.Files = sortedKeys(fileSet)
@@ -80,11 +81,12 @@ func Collect(ctx context.Context, client GraphClient, runID string, pageLimit in
 	b.Caps = sortedKeys(capSet)
 	b.Namespaces = sortedKeys(nsSet)
 	b.Endpoints = sortedKeys(endpointSet)
+	b.Domains = sortedKeys(domainSet)
 	return b, nil
 }
 
 // bucket sorts a traversed neighbor into the right behavior set by its label.
-func bucket(n *graphdb.NodeResponse, syscalls map[string]bool, files, bins, caps, namespaces, endpoints map[string]struct{}) {
+func bucket(n *graphdb.NodeResponse, syscalls map[string]bool, files, bins, caps, namespaces, endpoints, domains map[string]struct{}) {
 	if len(n.Labels) == 0 {
 		return
 	}
@@ -114,6 +116,10 @@ func bucket(n *graphdb.NodeResponse, syscalls map[string]bool, files, bins, caps
 		port := toPort(n.Properties["port"])
 		if ip != "" {
 			endpoints[ip+":"+strconv.Itoa(int(port))] = struct{}{}
+		}
+	case model.LabelDomain:
+		if name, _ := n.Properties["name"].(string); name != "" {
+			domains[name] = struct{}{}
 		}
 	}
 }

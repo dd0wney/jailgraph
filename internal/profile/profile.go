@@ -51,6 +51,7 @@ type Behavior struct {
 	Caps       []string        // capabilities the program's actions required (eBPF only)
 	Namespaces []string        // namespace types the program created (eBPF only)
 	Endpoints  []string        // network destinations "ip:port" contacted (eBPF only)
+	Domains    []string        // DNS names queried (eBPF only)
 	Lossy      bool            // the trace dropped events; profile is unsafe
 	// FullCoverage is true only when the collector observed the COMPLETE syscall
 	// set (eBPF). It gates default-deny (least-privilege) seccomp generation: a
@@ -68,6 +69,7 @@ func Union(runID string, behaviors ...Behavior) Behavior {
 	u := Behavior{RunID: runID, Syscalls: map[string]bool{}, FullCoverage: len(behaviors) > 0}
 	files, bins, caps, ns := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
 	eps := map[string]struct{}{}
+	doms := map[string]struct{}{}
 	for _, b := range behaviors {
 		for sc := range b.Syscalls {
 			u.Syscalls[sc] = true
@@ -77,6 +79,7 @@ func Union(runID string, behaviors ...Behavior) Behavior {
 		addAll(caps, b.Caps)
 		addAll(ns, b.Namespaces)
 		addAll(eps, b.Endpoints)
+		addAll(doms, b.Domains)
 		u.Lossy = u.Lossy || b.Lossy
 		u.FullCoverage = u.FullCoverage && b.FullCoverage
 		if u.Target == "" {
@@ -88,6 +91,7 @@ func Union(runID string, behaviors ...Behavior) Behavior {
 	u.Caps = sortedKeys(caps)
 	u.Namespaces = sortedKeys(ns)
 	u.Endpoints = sortedKeys(eps)
+	u.Domains = sortedKeys(doms)
 	return u
 }
 

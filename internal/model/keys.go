@@ -37,6 +37,9 @@ const (
 	// LabelEndpoint is a network destination (ip, port). Content-keyed like
 	// Binary/File: the same host contacted across runs is one shared node.
 	LabelEndpoint = "Endpoint"
+	// LabelDomain is a queried DNS name. Content-keyed like Endpoint: the same
+	// name queried across runs is one shared node.
+	LabelDomain = "Domain"
 
 	EdgePartOf    = "PART_OF"
 	EdgeSpawned   = "SPAWNED"
@@ -46,6 +49,7 @@ const (
 	EdgeHeldCap   = "HELD_CAP"
 	EdgeJoinedNS  = "JOINED_NS"
 	EdgeConnected = "CONNECTED"
+	EdgeResolved  = "RESOLVED"
 )
 
 // RunKey identifies a single learning session.
@@ -93,6 +97,10 @@ func FileActivityPrefix(runID string) string {
 func EndpointKey(ip string, port uint16) string {
 	return "endpoint:" + ip + ":" + strconv.Itoa(int(port))
 }
+
+// DomainKey identifies a queried DNS name. Content-keyed (shared across runs):
+// the same name queried by two runs is one node.
+func DomainKey(name string) string { return "domain:" + name }
 
 // CapKey identifies a Linux capability by name (e.g. "CAP_SYS_ADMIN").
 func CapKey(name string) string { return "cap:" + name }
