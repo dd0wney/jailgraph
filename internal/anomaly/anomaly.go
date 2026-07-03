@@ -86,9 +86,10 @@ func (s Severity) rank() int {
 }
 
 // DimBaseline is one dimension's population frequency table: Support maps an
-// observed item (syscall name / exec'd binary / normalized file path / cap) to
-// its support = the share of the N coverage-comparable baseline runs it appeared
-// in. N is per-dimension so confidence and coverage-mismatch are one check.
+// observed item (syscall name / exec'd binary / normalized file path / cap /
+// network endpoint) to its support = the share of the N coverage-comparable
+// baseline runs it appeared in. N is per-dimension so confidence and
+// coverage-mismatch are one check.
 type DimBaseline struct {
 	Support map[string]float64
 	N       int
@@ -96,14 +97,14 @@ type DimBaseline struct {
 
 // Baseline is the learned "normal" for a target across its run population.
 type Baseline struct {
-	Target                          string
-	Syscalls, Binaries, Files, Caps DimBaseline
-	TotalRuns                       int // same-target runs found (excl. candidate)
-	LossyExcluded                   int // lossy runs dropped from support
-	CandidateFullCoverage           bool
+	Target                                     string
+	Syscalls, Binaries, Files, Caps, Endpoints DimBaseline
+	TotalRuns                                  int // same-target runs found (excl. candidate)
+	LossyExcluded                              int // lossy runs dropped from support
+	CandidateFullCoverage                      bool
 }
 
-// Finding is one observation. Category ∈ syscall|binary|file|cap|coverage|method.
+// Finding is one observation. Category ∈ syscall|binary|file|cap|endpoint|coverage|method.
 type Finding struct {
 	Category       string   `json:"category"`
 	Severity       Severity `json:"severity"`

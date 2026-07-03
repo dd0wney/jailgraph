@@ -2,6 +2,9 @@ package anomaly
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"strconv"
 	"testing"
 
 	"github.com/dd0wney/jailgraph/internal/graphdb"
@@ -36,6 +39,12 @@ func cov(full bool) string {
 }
 
 func (f *fakeGraph) addRun(runID, target string, full, lossy bool, syscalls, binaries, files []string) {
+	f.addRunNet(runID, target, full, lossy, syscalls, binaries, files, nil)
+}
+
+// addRunNet is addRun plus network endpoints ("ip:port" strings), for tests
+// exercising the endpoints dimension.
+func (f *fakeGraph) addRunNet(runID, target string, full, lossy bool, syscalls, binaries, files, endpoints []string) {
 	f.byLabel[model.LabelRun] = append(f.byLabel[model.LabelRun], &graphdb.NodeResponse{
 		ID: f.id(), Labels: []string{model.LabelRun},
 		Properties: map[string]any{"id": runID, "target": target, "coverage": cov(full), "lossy": lossy},
@@ -54,6 +63,17 @@ func (f *fakeGraph) addRun(runID, target string, full, lossy bool, syscalls, bin
 	}
 	for _, fl := range files {
 		nb = append(nb, &graphdb.NodeResponse{ID: f.id(), Labels: []string{model.LabelFile}, Properties: map[string]any{"path": fl}})
+	}
+	for _, ep := range endpoints {
+		ip, port, err := net.SplitHostPort(ep)
+		if err != nil {
+			panic(fmt.Sprintf("addRunNet: bad endpoint %q: %v", ep, err))
+		}
+		p, err := strconv.Atoi(port)
+		if err != nil {
+			panic(fmt.Sprintf("addRunNet: bad endpoint port %q: %v", ep, err))
+		}
+		nb = append(nb, &graphdb.NodeResponse{ID: f.id(), Labels: []string{model.LabelEndpoint}, Properties: map[string]any{"ip": ip, "port": float64(p)}})
 	}
 	f.byNode[pid] = nb
 }
@@ -106,6 +126,45 @@ func TestCollect_CoverageMismatchZeroesSyscallN(t *testing.T) {
 	}
 	if base.Binaries.N != 1 {
 		t.Errorf("binaries should still be comparable across backends, N = %d", base.Binaries.N)
+	}
+}
+
+func TestCollect_EndpointsComparableAcrossFullCoverageRuns(t *testing.T) {
+	// Full-coverage candidate + full-coverage baseline run(s) → endpoints are
+	// comparable (N>0), mirroring syscalls/caps.
+	f := newFake()
+	f.addRunNet("cand", "/bin/app", true, false, []string{"read"}, []string{"/bin/app"}, nil, []string{"1.1.1.1:443"})
+	f.addRunNet("b1", "/bin/app", true, false, []string{"read"}, []string{"/bin/app"}, nil, []string{"1.1.1.1:443"})
+
+	_, base, err := Collect(context.Background(), f, "cand", "", 500)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if base.Endpoints.N != 1 {
+		t.Errorf("endpoints N = %d, want 1 (one full-coverage baseline run)", base.Endpoints.N)
+	}
+	if got := base.Endpoints.Support["1.1.1.1:443"]; got != 1.0 {
+		t.Errorf("endpoint support = %.3f, want 1.0", got)
+	}
+}
+
+func TestCollect_SeccompCandidateEndpointsNotComparable(t *testing.T) {
+	// A seccomp (partial-coverage) candidate never observes endpoints. Even
+	// though the baseline run is full-coverage and did record an endpoint, the
+	// endpoints dimension must be N=0 (not comparable) — otherwise a
+	// network-blind candidate would make every baseline endpoint look novel
+	// the moment the candidate itself contacted anything comparable, or a
+	// network-blind baseline run would manufacture false endpoint novelty.
+	f := newFake()
+	f.addRun("cand", "/bin/app", false /*partial/seccomp*/, false, []string{"read"}, []string{"/bin/app"}, nil)
+	f.addRunNet("b1", "/bin/app", true, false, []string{"read"}, []string{"/bin/app"}, nil, []string{"1.1.1.1:443"})
+
+	_, base, err := Collect(context.Background(), f, "cand", "", 500)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if base.Endpoints.N != 0 {
+		t.Errorf("a seccomp candidate must not get a comparable endpoints baseline, N = %d, want 0", base.Endpoints.N)
 	}
 }
 

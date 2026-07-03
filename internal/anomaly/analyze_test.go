@@ -108,6 +108,28 @@ func TestAnalyze_GateableSyscallStillHigh(t *testing.T) {
 	}
 }
 
+func TestScore_NovelEndpoint(t *testing.T) {
+	base := Baseline{
+		Target:    "curl",
+		Endpoints: DimBaseline{Support: map[string]float64{"1.1.1.1:443": 1.0}, N: 6},
+	}
+	cand := profile.Behavior{RunID: "r1", Endpoints: []string{"6.6.6.6:443"}}
+	got := FrequencyScorer{}.Score(base, cand)
+	if !hasFinding(got, "endpoint", "novel endpoint: 6.6.6.6:443") {
+		t.Fatalf("expected novel-endpoint finding; got %v", got)
+	}
+}
+
+// hasFinding is a test helper matching category+title substring.
+func hasFinding(fs []Finding, cat, titleContains string) bool {
+	for _, f := range fs {
+		if f.Category == cat && strings.Contains(f.Title, titleContains) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestAnalyze_ExecBinaryNotDoubledAsFile(t *testing.T) {
 	// /usr/bin/curl is exec'd (Binary) AND opened (File); report it once, as a binary.
 	r := score(baselineN(8), beh([]string{"read"}, []string{"/bin/x", "/usr/bin/curl"}, []string{"/usr/bin/curl", "/etc/conf"}, nil))

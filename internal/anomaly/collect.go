@@ -79,12 +79,20 @@ func buildBaseline(target string, candFull bool, pop []profile.Behavior, lossyEx
 	if candFull { // caps are observed only on full-coverage (eBPF) runs
 		capRuns = filterBeh(pop, func(b profile.Behavior) bool { return b.FullCoverage })
 	}
+	// Endpoints are observed only on network-capable (full-coverage/eBPF) runs.
+	// Compare only within that class, mirroring syscalls/caps, so a network-blind
+	// baseline run never manufactures false endpoint novelty.
+	var netRuns []profile.Behavior
+	if candFull {
+		netRuns = filterBeh(pop, func(b profile.Behavior) bool { return b.FullCoverage })
+	}
 	return Baseline{
 		Target:                target,
 		Syscalls:              buildDim(sameCov, func(b profile.Behavior) []string { return mapKeys(b.Syscalls) }),
 		Caps:                  buildDim(capRuns, func(b profile.Behavior) []string { return b.Caps }),
 		Binaries:              buildDim(pop, func(b profile.Behavior) []string { return b.Binaries }),
 		Files:                 buildDim(pop, func(b profile.Behavior) []string { return normalizeAll(b.Files) }),
+		Endpoints:             buildDim(netRuns, func(b profile.Behavior) []string { return b.Endpoints }),
 		TotalRuns:             len(pop),
 		LossyExcluded:         lossyExcluded,
 		CandidateFullCoverage: candFull,

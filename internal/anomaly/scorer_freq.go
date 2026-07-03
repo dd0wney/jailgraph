@@ -45,6 +45,7 @@ func (FrequencyScorer) Score(base Baseline, cand profile.Behavior) []Finding {
 		{"syscall", base.Syscalls, gateable, SevHigh},
 		{"binary", base.Binaries, cand.Binaries, SevMedium},
 		{"cap", base.Caps, cand.Caps, SevMedium},
+		{"endpoint", base.Endpoints, cand.Endpoints, SevMedium},
 		{"file", base.Files, normalizeAll(files), SevInfo},
 	}
 
