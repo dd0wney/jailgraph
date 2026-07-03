@@ -87,6 +87,7 @@ type traceSpecs struct {
 type traceProgramSpecs struct {
 	HandleCap      *ebpf.ProgramSpec `ebpf:"handle_cap"`
 	HandleConnect  *ebpf.ProgramSpec `ebpf:"handle_connect"`
+	HandleDnsSend  *ebpf.ProgramSpec `ebpf:"handle_dns_send"`
 	HandleExec     *ebpf.ProgramSpec `ebpf:"handle_exec"`
 	HandleFork     *ebpf.ProgramSpec `ebpf:"handle_fork"`
 	HandleOpen     *ebpf.ProgramSpec `ebpf:"handle_open"`
@@ -172,6 +173,7 @@ type traceVariables struct {
 type tracePrograms struct {
 	HandleCap      *ebpf.Program `ebpf:"handle_cap"`
 	HandleConnect  *ebpf.Program `ebpf:"handle_connect"`
+	HandleDnsSend  *ebpf.Program `ebpf:"handle_dns_send"`
 	HandleExec     *ebpf.Program `ebpf:"handle_exec"`
 	HandleFork     *ebpf.Program `ebpf:"handle_fork"`
 	HandleOpen     *ebpf.Program `ebpf:"handle_open"`
@@ -186,6 +188,7 @@ func (p *tracePrograms) Close() error {
 	return _TraceClose(
 		p.HandleCap,
 		p.HandleConnect,
+		p.HandleDnsSend,
 		p.HandleExec,
 		p.HandleFork,
 		p.HandleOpen,

@@ -22,6 +22,7 @@
 #define EVENT_NS 4
 #define EVENT_RENAME 5
 #define EVENT_UNLINK 6
+#define EVENT_DNS 7
 
 // FMODE_WRITE is a fmode_t bit (uapi, not a BTF type) — set when a file is
 // opened for writing.
@@ -426,6 +427,57 @@ int BPF_PROG(handle_connect, struct socket *sock, struct sockaddr *address, int 
 		init.proto = proto;
 		bpf_map_update_elem(&conn_stats, &k, &init, BPF_ANY);
 	}
+	return 0;
+}
+
+#define DNS_PORT 53
+#define DNS_SAMPLE_LEN 256
+
+// handle_dns_send samples outbound UDP payloads to port 53 (DNS queries). Like
+// rename/unlink it STREAMS raw bytes over the ringbuf; userspace parses the
+// qname (label decompression is not verifier-friendly). Connected and
+// unconnected resolvers both traverse udp_sendmsg. DoT/DoH/DNS-over-TCP are NOT
+// captured (documented blind spot) — DoH looks like ordinary TLS egress.
+SEC("fentry/udp_sendmsg")
+int BPF_PROG(handle_dns_send, struct sock *sk, struct msghdr *msg, size_t len)
+{
+	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
+	if (!bpf_map_lookup_elem(&tracked, &tgid))
+		return 0;
+
+	// Destination port: for a connected socket it is sk->sk_dport (network
+	// order); unconnected sends carry it in msg->msg_name. Cover the common
+	// connected-resolver path via sk_dport.
+	__u16 dport_be = BPF_CORE_READ(sk, __sk_common.skc_dport);
+	__u16 dport = (dport_be << 8) | (dport_be >> 8);
+	if (dport != DNS_PORT)
+		return 0;
+
+	// Copy up to DNS_SAMPLE_LEN bytes from the first iovec. msg_iter carries the
+	// user buffer; read its base ptr and length defensively.
+	struct iov_iter *iter = &msg->msg_iter;
+	const struct iovec *iov = BPF_CORE_READ(iter, __iov);
+	if (!iov)
+		return 0;
+	void *base = BPF_CORE_READ(iov, iov_base);
+	__u64 iov_len = BPF_CORE_READ(iov, iov_len);
+	if (!base || iov_len == 0)
+		return 0;
+
+	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e)
+		return 0;
+	e->kind = EVENT_DNS;
+	e->pid = tgid;
+	e->ppid = 0;
+	e->path[0] = 0;
+	__u32 n = iov_len < DNS_SAMPLE_LEN ? (__u32)iov_len : DNS_SAMPLE_LEN;
+	if (bpf_probe_read_user(e->path, DNS_SAMPLE_LEN, base) != 0) {
+		bpf_ringbuf_discard(e, 0);
+		return 0;
+	}
+	e->flags = n; // sampled length; userspace parses path[:flags]
+	bpf_ringbuf_submit(e, 0);
 	return 0;
 }
 
